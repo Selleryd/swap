@@ -5,7 +5,7 @@
  * Example:
  * const API_BASE = "https://script.google.com/macros/s/XXXXXXXXXXXX/exec";
  */
-const API_BASE = "PASTE_YOUR_EXEC_URL_HERE";
+const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
 
 /* ---------- Ambient background animation ---------- */
 const canvas = document.getElementById("bg");
@@ -134,7 +134,7 @@ async function apiGet(params) {
 }
 
 async function apiPing() {
-  if (!API_BASE || API_BASE.includes("PASTE_YOUR_EXEC_URL_HERE")) {
+  if (!API_BASE || API_BASE.includes("https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec")) {
     setApi(null, "API: not set");
     return false;
   }

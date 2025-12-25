@@ -5,7 +5,7 @@
      Example:
      const API_BASE = "https://script.google.com/macros/s/XXXXXXXXXXXX/exec";
 */
-const API_BASE = ""; https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec
+const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG10j2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtqQB6qfenfmQ/exec";
 
 // Simple debounce
 function debounce(fn, ms) {

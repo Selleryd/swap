@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SWAP — Switch With Any Portion</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg">
+    <div class="orb orb1"></div>
+    <div class="orb orb2"></div>
+    <div class="orb orb3"></div>
+  </div>
+
+  <main class="shell">
+    <header class="top">
+      <div class="brand">
+        <div class="logo">S</div>
+        <div>
+          <div class="title">SWAP</div>
+          <div class="sub">Switch With Any Portion • precision swaps</div>
+        </div>
+      </div>
+      <div class="pill" id="apiStatus">API: disconnected</div>
+    </header>
+
+    <section class="grid">
+      <section class="card">
+        <div class="cardHead">
+          <div>
+            <h2>Targets</h2>
+            <p class="muted">Mifflin-St Jeor + activity + goal</p>
+          </div>
+        </div>
+
+        <div class="form two">
+          <label>Height (cm)<input id="heightCm" type="number" value="170"></label>
+          <label>Weight (kg)<input id="weightKg" type="number" value="70"></label>
+          <label>Age<input id="age" type="number" value="32"></label>
+          <label>Sex
+            <select id="sex">
+              <option value="female" selected>Female</option>
+              <option value="male">Male</option>
+            </select>
+          </label>
+          <label>Activity
+            <select id="activity">
+              <option value="sedentary">Sedentary</option>
+              <option value="light">Light</option>
+              <option value="moderate" selected>Moderate</option>
+              <option value="high">High</option>
+              <option value="athlete">Athlete</option>
+            </select>
+          </label>
+          <label>Goal
+            <select id="goal">
+              <option value="fat_loss" selected>Fat loss</option>
+              <option value="maintain">Maintain</option>
+              <option value="lean_gain">Lean gain</option>
+              <option value="muscle_gain">Muscle gain</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row">
+          <button class="btn" id="btnTargets">Compute targets</button>
+          <div class="mini muted" id="targetsNote"></div>
+        </div>
+
+        <div class="result" id="targetsOut">
+          <div class="kpi"><div class="k">BMR</div><div class="v" id="kpiBmr">—</div></div>
+          <div class="kpi"><div class="k">TDEE</div><div class="v" id="kpiTdee">—</div></div>
+          <div class="kpi"><div class="k">Target kcal</div><div class="v" id="kpiCals">—</div></div>
+          <div class="kpi"><div class="k">Protein</div><div class="v" id="kpiP">—</div></div>
+          <div class="kpi"><div class="k">Carbs</div><div class="v" id="kpiC">—</div></div>
+          <div class="kpi"><div class="k">Fat</div><div class="v" id="kpiF">—</div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="cardHead">
+          <div>
+            <h2>Swap</h2>
+            <p class="muted">Pick a food, enter portion, get equivalent swaps</p>
+          </div>
+        </div>
+
+        <div class="form">
+          <label>Food search
+            <input id="foodSearch" placeholder="e.g., chicken breast, oats, banana" autocomplete="off">
+            <div class="dropdown" id="foodDropdown"></div>
+          </label>
+
+          <div class="two">
+            <label>Portion
+              <input id="portion" type="number" value="140" min="0" step="1">
+            </label>
+            <label>Unit
+              <select id="unit">
+                <option value="g" selected>g</option>
+                <option value="oz">oz</option>
+                <option value="cup">cup</option>
+                <option value="tbsp">tbsp</option>
+                <option value="tsp">tsp</option>
+                <option value="piece">piece</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="two">
+            <label>Diet (optional)
+              <select id="diet">
+                <option value="">—</option>
+                <option value="kosher">kosher</option>
+                <option value="halal">halal</option>
+                <option value="vegan">vegan</option>
+                <option value="vegetarian">vegetarian</option>
+                <option value="keto">keto</option>
+                <option value="gluten_free">gluten_free</option>
+                <option value="low_carb">low_carb</option>
+              </select>
+            </label>
+            <label>Medical (optional)
+              <select id="medical">
+                <option value="">—</option>
+                <option value="diabetes">diabetes</option>
+                <option value="prediabetes">prediabetes</option>
+              </select>
+            </label>
+          </div>
+
+          <label>Allergies (comma separated, optional)
+            <input id="allergies" placeholder="e.g., dairy, gluten, soy, fish">
+          </label>
+
+          <div class="three">
+            <label>Cal tolerance
+              <select id="calTol">
+                <option value="0.02">2%</option>
+                <option value="0.05" selected>5%</option>
+                <option value="0.08">8%</option>
+                <option value="0.10">10%</option>
+              </select>
+            </label>
+            <label>Macro tolerance
+              <select id="macroTol">
+                <option value="0.05">5%</option>
+                <option value="0.10" selected>10%</option>
+                <option value="0.15">15%</option>
+                <option value="0.20">20%</option>
+              </select>
+            </label>
+            <label>Mode
+              <select id="mode">
+                <option value="strict" selected>Strict</option>
+                <option value="flex">Flex</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnSwap" disabled>Find swaps</button>
+            <div class="mini muted" id="pickedFood">No food selected</div>
+          </div>
+        </div>
+
+        <div class="swapTop" id="swapTop" hidden>
+          <div class="swapOrig">
+            <div class="muted">Original</div>
+            <div class="big" id="origName">—</div>
+            <div class="chips" id="origChips"></div>
+          </div>
+        </div>
+
+        <div class="cards" id="swapCards"></div>
+        <div class="mini muted" id="swapNote"></div>
+      </section>
+    </section>
+
+    <footer class="foot">
+      <div class="muted">MVP SWAP engine: deterministic math + DB. Expand Foods sheet to scale.</div>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

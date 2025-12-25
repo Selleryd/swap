@@ -1,300 +1,500 @@
 "use strict";
 
-// 1) PASTE YOUR APPS SCRIPT WEB APP /exec URL HERE
-const WEBAPP_EXEC = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
+/*
+  1) PASTE YOUR APPS SCRIPT WEB APP EXEC URL HERE:
+     Example:
+     const API_BASE = "https://script.google.com/macros/s/XXXXXXXXXXXX/exec";
+*/
+const API_BASE = ""; https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec
+
+// Simple debounce
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
 const $ = (id) => document.getElementById(id);
 
-const apiStatus = $("apiStatus");
+const ui = {
+  // tabs
+  navItems: Array.from(document.querySelectorAll(".navItem")),
+  tabs: {
+    targets: $("tab-targets"),
+    swap: $("tab-swap"),
+    about: $("tab-about"),
+  },
+  pageTitle: $("pageTitle"),
+  pageHint: $("pageHint"),
+  primaryActionBtn: $("primaryActionBtn"),
 
-const foodSearch = $("foodSearch");
-const foodDropdown = $("foodDropdown");
-const btnSwap = $("btnSwap");
-const pickedFood = $("pickedFood");
+  // status
+  apiPill: $("apiPill"),
+  apiDot: $("apiDot"),
+  apiText: $("apiText"),
+  refreshBtn: $("refreshBtn"),
+  demoBtn: $("demoBtn"),
 
-const portionEl = $("portion");
-const unitEl = $("unit");
+  // targets inputs
+  heightCm: $("heightCm"),
+  weightKg: $("weightKg"),
+  age: $("age"),
+  sex: $("sex"),
+  activity: $("activity"),
+  goal: $("goal"),
+  targetsBadge: $("targetsBadge"),
+  bmrVal: $("bmrVal"),
+  tdeeVal: $("tdeeVal"),
+  tkcalVal: $("tkcalVal"),
+  protVal: $("protVal"),
+  carbVal: $("carbVal"),
+  fatVal: $("fatVal"),
 
-const dietEl = $("diet");
-const medicalEl = $("medical");
-const allergiesEl = $("allergies");
-const calTolEl = $("calTol");
-const macroTolEl = $("macroTol");
-const modeEl = $("mode");
+  // swap inputs
+  foodQuery: $("foodQuery"),
+  suggestions: $("suggestions"),
+  portion: $("portion"),
+  unit: $("unit"),
+  diet: $("diet"),
+  medical: $("medical"),
+  allergies: $("allergies"),
+  calTol: $("calTol"),
+  macroTol: $("macroTol"),
+  mode: $("mode"),
+  maxResults: $("maxResults"),
+  swapBtn: $("swapBtn"),
+  clearBtn: $("clearBtn"),
+  selectedFood: $("selectedFood"),
+  results: $("results"),
+  resultsBadge: $("resultsBadge"),
+  emptyState: $("emptyState"),
+};
 
-const swapCards = $("swapCards");
-const swapTop = $("swapTop");
-const origName = $("origName");
-const origChips = $("origChips");
-const swapNote = $("swapNote");
+let DEMO_MODE = false;
 
-// Targets UI
-const btnTargets = $("btnTargets");
-const heightCm = $("heightCm");
-const weightKg = $("weightKg");
-const age = $("age");
-const sex = $("sex");
-const activity = $("activity");
-const goal = $("goal");
+// Store selected food
+let selected = null;
 
-const kpiBmr = $("kpiBmr");
-const kpiTdee = $("kpiTdee");
-const kpiCals = $("kpiCals");
-const kpiP = $("kpiP");
-const kpiC = $("kpiC");
-const kpiF = $("kpiF");
-const targetsNote = $("targetsNote");
+/* -----------------------------
+   API helpers
+--------------------------------*/
 
-// App state
-let selectedFood = null;
-let searchTimer = null;
+async function apiGet(params) {
+  if (!API_BASE) throw new Error("API_BASE not configured");
+  const url = API_BASE + "?" + new URLSearchParams(params).toString();
+  const res = await fetch(url, { method: "GET" });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+  return data;
+}
 
-// ---------------------------
-// JSONP helper (avoids CORS)
-// ---------------------------
-function jsonp(url, timeoutMs = 12000) {
-  return new Promise((resolve, reject) => {
-    const cb = "__swap_cb_" + Math.random().toString(16).slice(2);
-    const script = document.createElement("script");
-    const t = setTimeout(() => {
-      cleanup();
-      reject(new Error("JSONP timeout"));
-    }, timeoutMs);
+async function apiPost(action, payload) {
+  if (!API_BASE) throw new Error("API_BASE not configured");
+  const url = API_BASE;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+  return data;
+}
 
-    function cleanup() {
-      clearTimeout(t);
-      delete window[cb];
-      if (script && script.parentNode) script.parentNode.removeChild(script);
+/*
+  Expected backend (recommended):
+  GET  ?action=ping                          -> { ok:true }
+  GET  ?action=search&q=chicken              -> { items:[{id,name,group,subgroup,units_json}] }
+  GET  ?action=swap&id=usda_123&grams=200... -> { base:{...}, swaps:[...]}
+  POST {action:"targets", heightCm,...}      -> { bmr,tdee,targetKcal,protein_g,carbs_g,fat_g }
+
+  If your backend differs, map it here without touching the UI code.
+*/
+
+async function apiPing() {
+  if (DEMO_MODE) return { ok: true };
+  return apiGet({ action: "ping" });
+}
+
+async function apiSearch(q) {
+  if (DEMO_MODE) return demoSearch(q);
+  return apiGet({ action: "search", q });
+}
+
+async function apiTargets(input) {
+  if (DEMO_MODE) return demoTargets(input);
+  return apiPost("targets", input);
+}
+
+async function apiSwap(payload) {
+  if (DEMO_MODE) return demoSwap(payload);
+  // Prefer GET for cacheable requests
+  return apiGet({ action: "swap", ...payload });
+}
+
+/* -----------------------------
+   UI: Tabs
+--------------------------------*/
+
+function setTab(tab) {
+  ui.navItems.forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  Object.entries(ui.tabs).forEach(([k, el]) => el.classList.toggle("active", k === tab));
+
+  if (tab === "targets") {
+    ui.pageTitle.textContent = "Targets";
+    ui.pageHint.textContent = "Compute BMR/TDEE + macro targets, then swap foods at any portion.";
+    ui.primaryActionBtn.textContent = "Compute targets";
+  } else if (tab === "swap") {
+    ui.pageTitle.textContent = "Swap Engine";
+    ui.pageHint.textContent = "Find precision-equivalent swaps within your calorie + macro tolerance.";
+    ui.primaryActionBtn.textContent = "Find swaps";
+  } else {
+    ui.pageTitle.textContent = "Notes";
+    ui.pageHint.textContent = "Ship clean MVP now, harden later.";
+    ui.primaryActionBtn.textContent = "Open Swap Engine";
+  }
+}
+
+ui.navItems.forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+ui.primaryActionBtn.addEventListener("click", async () => {
+  const active = ui.navItems.find(b => b.classList.contains("active"))?.dataset.tab;
+  if (active === "targets") return onComputeTargets();
+  if (active === "swap") return onFindSwaps();
+  if (active === "about") return setTab("swap");
+});
+
+/* -----------------------------
+   API Status
+--------------------------------*/
+
+async function refreshStatus() {
+  ui.apiText.textContent = DEMO_MODE ? "API: demo mode" : "API: checking…";
+  ui.apiDot.className = "dot";
+
+  if (DEMO_MODE) {
+    ui.apiDot.classList.add("good");
+    return;
+  }
+
+  if (!API_BASE) {
+    ui.apiText.textContent = "API: not configured";
+    ui.apiDot.classList.add("bad");
+    return;
+  }
+
+  try {
+    const r = await apiPing();
+    if (r && r.ok) {
+      ui.apiText.textContent = "API: connected";
+      ui.apiDot.classList.add("good");
+    } else {
+      ui.apiText.textContent = "API: responded";
+      ui.apiDot.classList.add("warn");
     }
-
-    window[cb] = (data) => {
-      cleanup();
-      resolve(data);
-    };
-
-    const sep = url.includes("?") ? "&" : "?";
-    script.src = url + sep + "callback=" + encodeURIComponent(cb);
-    script.onerror = () => {
-      cleanup();
-      reject(new Error("JSONP network error"));
-    };
-    document.body.appendChild(script);
-  });
-}
-
-function routeUrl(route, params = {}) {
-  const u = new URL(WEBAPP_EXEC);
-  u.searchParams.set("route", route);
-  Object.entries(params).forEach(([k,v]) => {
-    if (v === undefined || v === null) return;
-    u.searchParams.set(k, String(v));
-  });
-  return u.toString();
-}
-
-// ---------------------------
-// Boot: health check
-// ---------------------------
-(async function boot() {
-  try {
-    const data = await jsonp(routeUrl("health"));
-    apiStatus.textContent = data.ok ? "API: connected" : "API: error";
   } catch (e) {
-    apiStatus.textContent = "API: disconnected";
+    ui.apiText.textContent = "API: offline";
+    ui.apiDot.classList.add("bad");
   }
-})();
-
-// ---------------------------
-// Food search + dropdown
-// ---------------------------
-function hideDropdown() {
-  foodDropdown.style.display = "none";
-  foodDropdown.innerHTML = "";
-}
-function showDropdown(items) {
-  foodDropdown.innerHTML = items.map(x =>
-    `<div class="item" data-id="${x.id}" data-name="${escapeHtml(x.name)}" data-group="${x.group}" data-subgroup="${x.subgroup}">
-      <strong>${escapeHtml(x.name)}</strong>
-      <span style="opacity:.6"> • ${x.group}${x.subgroup ? ":" + x.subgroup : ""}</span>
-    </div>`
-  ).join("");
-  foodDropdown.style.display = items.length ? "block" : "none";
 }
 
-foodSearch.addEventListener("input", () => {
-  const q = foodSearch.value.trim();
-  selectedFood = null;
-  btnSwap.disabled = true;
-  pickedFood.textContent = "No food selected";
-  hideDropdown();
-
-  clearTimeout(searchTimer);
-  if (q.length < 2) return;
-
-  searchTimer = setTimeout(async () => {
-    try {
-      const data = await jsonp(routeUrl("foods", { q, limit: 12 }));
-      if (!data.ok) return;
-      showDropdown(data.foods || []);
-    } catch (_) {}
-  }, 180);
+ui.refreshBtn.addEventListener("click", refreshStatus);
+ui.demoBtn.addEventListener("click", () => {
+  DEMO_MODE = !DEMO_MODE;
+  ui.demoBtn.textContent = DEMO_MODE ? "Demo mode: ON" : "Demo mode";
+  refreshStatus();
 });
 
-foodDropdown.addEventListener("click", (e) => {
-  const item = e.target.closest(".item");
-  if (!item) return;
+/* -----------------------------
+   Targets
+--------------------------------*/
 
-  selectedFood = {
-    id: item.getAttribute("data-id"),
-    name: item.getAttribute("data-name"),
-    group: item.getAttribute("data-group"),
-    subgroup: item.getAttribute("data-subgroup")
-  };
+function round(n) { return Math.round(n); }
 
-  foodSearch.value = selectedFood.name;
-  hideDropdown();
-
-  pickedFood.textContent = `Selected: ${selectedFood.name} (${selectedFood.group})`;
-  btnSwap.disabled = false;
-});
-
-document.addEventListener("click", (e) => {
-  if (!foodDropdown.contains(e.target) && e.target !== foodSearch) hideDropdown();
-});
-
-// ---------------------------
-// Swap request
-// ---------------------------
-btnSwap.addEventListener("click", async () => {
-  if (!selectedFood) return;
-
-  btnSwap.disabled = true;
-  swapNote.textContent = "Computing swaps…";
-  swapCards.innerHTML = "";
-  swapTop.hidden = true;
-
-  const portion = Number(portionEl.value || 0);
-  const unit = unitEl.value;
-
-  const cal_tol = calTolEl.value;
-  const macro_tol = macroTolEl.value;
-
-  const diet = dietEl.value;
-  const medical = medicalEl.value;
-  const allergies = allergiesEl.value.trim();
-
-  const flex = (modeEl.value === "flex") ? "1" : "0";
-
+async function onComputeTargets() {
+  ui.targetsBadge.textContent = "Computing…";
   try {
-    const data = await jsonp(routeUrl("swap", {
-      food_id: selectedFood.id,
-      portion,
-      unit,
-      cal_tol,
-      macro_tol,
-      same_group: "1",
-      flex,
-      diet,
-      medical,
-      allergies,
-      limit: "12"
-    }));
+    const input = {
+      heightCm: Number(ui.heightCm.value),
+      weightKg: Number(ui.weightKg.value),
+      age: Number(ui.age.value),
+      sex: ui.sex.value,
+      activity: ui.activity.value,
+      goal: ui.goal.value,
+    };
 
-    if (!data.ok) throw new Error(data.error || "Swap failed");
+    const out = await apiTargets(input);
 
-    renderOriginal(data.original);
-    renderSwaps(data.swaps || []);
-    swapNote.textContent = (data.swaps && data.swaps.length)
-      ? `Showing top ${data.swaps.length} swaps within your tolerances.`
-      : "No valid swaps found at these tolerances. Try Flex mode or wider tolerances.";
-  } catch (err) {
-    swapNote.textContent = "Error: " + err.message;
-  } finally {
-    btnSwap.disabled = false;
+    ui.bmrVal.textContent = out.bmr ? round(out.bmr) : "—";
+    ui.tdeeVal.textContent = out.tdee ? round(out.tdee) : "—";
+    ui.tkcalVal.textContent = out.targetKcal ? round(out.targetKcal) : "—";
+    ui.protVal.textContent = out.protein_g ? round(out.protein_g) : "—";
+    ui.carbVal.textContent = out.carbs_g ? round(out.carbs_g) : "—";
+    ui.fatVal.textContent = out.fat_g ? round(out.fat_g) : "—";
+
+    ui.targetsBadge.textContent = "Computed";
+    ui.targetsBadge.classList.remove("subtle");
+  } catch (e) {
+    ui.targetsBadge.textContent = "Error";
+    console.error(e);
+    alert("Targets failed. If API isn’t wired yet, toggle Demo mode.");
   }
-});
-
-function renderOriginal(orig) {
-  swapTop.hidden = false;
-  origName.textContent = `${orig.food.name} • ${orig.grams}g • ${orig.calories} kcal`;
-  origChips.innerHTML = [
-    `Protein ${orig.macros.protein}g`,
-    `Carbs ${orig.macros.carbs}g`,
-    `Fat ${orig.macros.fat}g`,
-    `Fiber ${orig.macros.fiber}g`,
-    `Sugar ${orig.macros.sugar}g`,
-    `Sodium ${orig.macros.sodium_mg}mg`
-  ].map(t => `<span class="chip">${t}</span>`).join("");
 }
 
-function renderSwaps(swaps) {
-  swapCards.innerHTML = swaps.map(s => {
-    const f = s.food;
+/* -----------------------------
+   Search suggestions
+--------------------------------*/
+
+function closeSuggestions() {
+  ui.suggestions.classList.remove("open");
+  ui.suggestions.innerHTML = "";
+}
+
+function renderSuggestions(items = []) {
+  if (!items.length) return closeSuggestions();
+
+  ui.suggestions.innerHTML = items.slice(0, 8).map(it => {
+    const meta = [it.group, it.subgroup].filter(Boolean).join(" • ");
     return `
-      <div class="swapCard">
-        <div class="swapCardTop">
-          <div>
-            <div style="font-weight:850">${escapeHtml(f.name)}</div>
-            <div class="muted mini">${f.group}${f.subgroup ? ":" + f.subgroup : ""} • ${s.grams}g • ${s.calories} kcal</div>
-          </div>
-          <div class="badge">${s.score}</div>
-        </div>
-
-        <div class="line">
-          <div class="metric">P ${s.macros.protein}g</div>
-          <div class="metric">C ${s.macros.carbs}g</div>
-          <div class="metric">F ${s.macros.fat}g</div>
-          <div class="metric">Fiber ${s.macros.fiber}g</div>
-          <div class="metric">Sugar ${s.macros.sugar}g</div>
-          <div class="metric">Na ${s.macros.sodium_mg}mg</div>
-        </div>
-
-        <div class="muted mini" style="margin-top:10px">
-          Δcal ${(s.deltas.cal*100).toFixed(1)}% • ΔP ${(s.deltas.protein*100).toFixed(1)}% • ΔC ${(s.deltas.carbs*100).toFixed(1)}% • ΔF ${(s.deltas.fat*100).toFixed(1)}%
-        </div>
-
-        <div class="mini" style="margin-top:10px; color: rgba(255,255,255,.78)">
-          ${escapeHtml(s.reason || "")}
-        </div>
+      <div class="sugItem" data-id="${escapeHtml(it.id)}">
+        <div class="sugName">${escapeHtml(it.name || it.id)}</div>
+        <div class="sugMeta">${escapeHtml(meta || "")}</div>
       </div>
     `;
   }).join("");
+
+  ui.suggestions.classList.add("open");
+
+  ui.suggestions.querySelectorAll(".sugItem").forEach(el => {
+    el.addEventListener("click", () => {
+      const id = el.getAttribute("data-id");
+      const it = items.find(x => x.id === id);
+      if (it) selectFood(it);
+      closeSuggestions();
+    });
+  });
 }
 
-// ---------------------------
-// Targets request
-// ---------------------------
-btnTargets.addEventListener("click", async () => {
-  btnTargets.disabled = true;
-  targetsNote.textContent = "Computing…";
-  try {
-    const data = await jsonp(routeUrl("targets", {
-      height_cm: heightCm.value,
-      weight_kg: weightKg.value,
-      age: age.value,
-      sex: sex.value,
-      activity: activity.value,
-      goal: goal.value
-    }));
-    if (!data.ok) throw new Error(data.error || "Targets failed");
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
-    kpiBmr.textContent = data.bmr;
-    kpiTdee.textContent = data.tdee;
-    kpiCals.textContent = data.target_calories;
-    kpiP.textContent = `${data.macros_g.protein}g`;
-    kpiC.textContent = `${data.macros_g.carbs}g`;
-    kpiF.textContent = `${data.macros_g.fat}g`;
-    targetsNote.textContent = "Done.";
+const onSearchChange = debounce(async () => {
+  const q = ui.foodQuery.value.trim();
+  if (q.length < 2) return closeSuggestions();
+  try {
+    const res = await apiSearch(q);
+    const items = res.items || res.results || [];
+    renderSuggestions(items);
+    // Keep latest list for click selection
+    ui.suggestions._items = items;
   } catch (e) {
-    targetsNote.textContent = "Error: " + e.message;
-  } finally {
-    btnTargets.disabled = false;
+    // no spam alerts while typing
+    closeSuggestions();
   }
+}, 180);
+
+ui.foodQuery.addEventListener("input", onSearchChange);
+ui.foodQuery.addEventListener("focus", onSearchChange);
+document.addEventListener("click", (e) => {
+  if (!ui.suggestions.contains(e.target) && e.target !== ui.foodQuery) closeSuggestions();
 });
 
-// ---------------------------
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-  }[c]));
+/* -----------------------------
+   Food selection + unit handling
+--------------------------------*/
+
+function selectFood(it) {
+  selected = it;
+
+  ui.foodQuery.value = it.name || it.id;
+
+  // Try to use units_json if provided
+  let units = null;
+  try {
+    units = it.units_json ? JSON.parse(it.units_json) : null;
+  } catch {}
+
+  // rebuild unit options smartly
+  const baseUnits = [
+    ["g","g"], ["oz","oz"], ["serving","serving"], ["piece","piece"], ["cup","cup"], ["tbsp","tbsp"]
+  ];
+  const available = new Set(Object.keys(units || {}));
+
+  ui.unit.innerHTML = baseUnits
+    .filter(([val]) => val === "g" || val === "oz" || available.has(val) || val === "serving")
+    .map(([val,label]) => `<option value="${val}">${label}</option>`)
+    .join("");
+
+  // prefer piece if exists
+  if (available.has("piece")) ui.unit.value = "piece";
+  else ui.unit.value = "serving";
+
+  ui.selectedFood.innerHTML = `
+    <div class="selectedTitle">${escapeHtml(it.name || it.id)}</div>
+    <div class="selectedSub">${escapeHtml([it.group, it.subgroup].filter(Boolean).join(" • ") || "—")}</div>
+  `;
 }
+
+/* -----------------------------
+   Swap
+--------------------------------*/
+
+ui.swapBtn.addEventListener("click", onFindSwaps);
+ui.clearBtn.addEventListener("click", () => {
+  selected = null;
+  ui.foodQuery.value = "";
+  ui.portion.value = "2";
+  ui.allergies.value = "";
+  ui.results.innerHTML = "";
+  ui.emptyState.style.display = "block";
+  ui.resultsBadge.textContent = "Waiting";
+  ui.selectedFood.innerHTML = `
+    <div class="selectedTitle">No food selected</div>
+    <div class="selectedSub">Search a food and pick one from the list.</div>
+  `;
+});
+
+async function onFindSwaps() {
+  if (!selected) {
+    alert("Pick a food first (select from suggestions).");
+    return;
+  }
+
+  ui.resultsBadge.textContent = "Computing…";
+  ui.emptyState.style.display = "none";
+  ui.results.innerHTML = "";
+
+  const payload = {
+    id: selected.id,
+    portion: String(ui.portion.value || "1"),
+    unit: ui.unit.value,
+    diet: ui.diet.value,
+    medical: ui.medical.value,
+    allergies: ui.allergies.value,
+    calTol: ui.calTol.value,
+    macroTol: ui.macroTol.value,
+    mode: ui.mode.value,
+    maxResults: ui.maxResults.value
+  };
+
+  try {
+    const out = await apiSwap(payload);
+    const swaps = out.swaps || out.items || out.results || [];
+    ui.resultsBadge.textContent = swaps.length ? `${swaps.length} found` : "None found";
+
+    if (!swaps.length) {
+      ui.emptyState.style.display = "block";
+      ui.emptyState.querySelector(".emptyTitle").textContent = "No matches within tolerance";
+      ui.emptyState.querySelector(".emptySub").textContent =
+        payload.mode === "strict"
+          ? "Try Flex mode or widen tolerances slightly."
+          : "Try different portion or search another base food.";
+      return;
+    }
+
+    ui.results.innerHTML = swaps.map(s => {
+      const title = s.name || s.id;
+      const meta = [s.group, s.subgroup].filter(Boolean).join(" • ");
+      const portionText = s.portionText || s.portion_display || "";
+      const kcal = s.kcal ?? s.calories ?? "";
+      const p = s.p ?? s.protein ?? "";
+      const c = s.c ?? s.carbs ?? "";
+      const f = s.f ?? s.fat ?? "";
+
+      return `
+        <div class="resultCard">
+          <div>
+            <div class="rcTitle">${escapeHtml(title)}</div>
+            <div class="rcMeta">${escapeHtml(meta)}</div>
+            <div class="rcMeta">${escapeHtml(portionText)}</div>
+          </div>
+          <div class="rcRight">
+            <div class="rcBig">${escapeHtml(String(kcal))} kcal</div>
+            <div class="rcSmall">P ${escapeHtml(String(p))} • C ${escapeHtml(String(c))} • F ${escapeHtml(String(f))}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+  } catch (e) {
+    console.error(e);
+    ui.resultsBadge.textContent = "Error";
+    ui.emptyState.style.display = "block";
+    ui.emptyState.querySelector(".emptyTitle").textContent = "Swap request failed";
+    ui.emptyState.querySelector(".emptySub").textContent =
+      "If your backend isn’t wired to these endpoints yet, toggle Demo mode for UI testing.";
+  }
+}
+
+/* -----------------------------
+   Demo fallback (so UI works instantly)
+--------------------------------*/
+
+const DEMO_FOODS = [
+  { id:"usda_171077", name:"Chicken Breast, Raw", group:"protein", subgroup:"meat", units_json: JSON.stringify({g:1,oz:28.35,serving:100,piece:140}) },
+  { id:"usda_173686", name:"Salmon, Atlantic, Raw", group:"protein", subgroup:"seafood", units_json: JSON.stringify({g:1,oz:28.35,serving:100,piece:140}) },
+  { id:"usda_168917", name:"Greek Yogurt, Plain, Nonfat", group:"protein", subgroup:"dairy", units_json: JSON.stringify({g:1,oz:28.35,serving:170,cup:245}) },
+  { id:"usda_168880", name:"Rolled Oats, Dry", group:"carb", subgroup:"grain", units_json: JSON.stringify({g:1,oz:28.35,serving:40,cup:80}) },
+  { id:"usda_169133", name:"White Rice, Cooked", group:"carb", subgroup:"grain", units_json: JSON.stringify({g:1,oz:28.35,serving:158,cup:158}) },
+];
+
+function demoSearch(q){
+  const s = q.toLowerCase();
+  const items = DEMO_FOODS.filter(f => (f.name||"").toLowerCase().includes(s) || f.id.includes(s));
+  return Promise.resolve({ items });
+}
+
+function demoTargets(input){
+  const { heightCm, weightKg, age, sex, activity, goal } = input;
+
+  // Mifflin-St Jeor
+  const bmr = sex === "female"
+    ? (10*weightKg + 6.25*heightCm - 5*age - 161)
+    : (10*weightKg + 6.25*heightCm - 5*age + 5);
+
+  const mult = ({
+    sedentary:1.2, light:1.375, moderate:1.55, high:1.725, athlete:1.9
+  })[activity] || 1.55;
+
+  const tdee = bmr * mult;
+
+  const targetKcal = goal === "cut" ? tdee*0.85 : goal === "bulk" ? tdee*1.10 : tdee;
+
+  // Simple default macros: protein 1.8g/kg, fat 0.8g/kg, rest carbs
+  const protein_g = weightKg * 1.8;
+  const fat_g = weightKg * 0.8;
+  const proteinKcal = protein_g * 4;
+  const fatKcal = fat_g * 9;
+  const carbsKcal = Math.max(0, targetKcal - proteinKcal - fatKcal);
+  const carbs_g = carbsKcal / 4;
+
+  return Promise.resolve({ bmr, tdee, targetKcal, protein_g, carbs_g, fat_g });
+}
+
+function demoSwap(payload){
+  // Fake results just to show UI. Your backend will return real swaps.
+  const swaps = [
+    { id:"usda_173686", name:"Salmon, Atlantic, Raw", group:"protein", subgroup:"seafood", portionText:"≈ 1.2 pieces", kcal: 280, p: 28, c: 0, f: 18 },
+    { id:"usda_168917", name:"Greek Yogurt, Plain, Nonfat", group:"protein", subgroup:"dairy", portionText:"≈ 2 cups", kcal: 260, p: 46, c: 18, f: 0 },
+  ];
+  return Promise.resolve({ swaps });
+}
+
+/* -----------------------------
+   Init
+--------------------------------*/
+
+refreshStatus();
+setTab("targets");

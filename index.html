@@ -1,315 +1,384 @@
-\<!doctype html>
+<!-- index.html -->
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SWAP — Switch With Any Portion</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <canvas id="bg"></canvas>
+  <!-- Background animation canvas -->
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
 
-  <!-- Splash -->
+  <!-- SPLASH -->
   <main id="splash" class="splash">
-    <div class="splashCard">
-      <div class="logoWrap">
-        <img class="logo" alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
-      </div>
-
-      <h1>Switch With Any Portion</h1>
-      <p class="sub">
-        Precision food swaps at any portion size — database-backed matching with strict tolerance logic.
-      </p>
-
-      <div class="pillRow">
-        <div class="pill">
-          <span class="dot" id="apiDot"></span>
-          <span id="apiText">API: checking…</span>
+    <section class="splashLeft" style="background-image:url('https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Screenshot_2025-12-09_at_12.16.42_PM.png?v=1765300609');">
+      <div class="splashLeftOverlay"></div>
+      <div class="splashLeftInner">
+        <div class="ratingRow" aria-label="5 star rating">
+          <div class="stars" aria-hidden="true">★★★★★</div>
+          <div class="ratingText">Rated 5.0 by early users</div>
         </div>
-        <button class="iconBtn" id="apiRetry" title="Retry">
-          ↻
-        </button>
-      </div>
 
-      <div class="featureGrid">
-        <div class="feature">
-          <div class="kicker">Medical-grade</div>
-          <div class="title">Deterministic exchange math</div>
-          <div class="desc">Strict mode returns swaps only if they meet your tolerance. No guessing.</div>
+        <h1 class="heroTitle">SWITCH WITH ANY PORTION</h1>
+        <p class="heroSub">
+          Precision food swaps at any portion size — database-backed matching with strict tolerance logic.
+        </p>
+
+        <div class="poweredBy">
+          Powered by <a href="https://monkvee.com" target="_blank" rel="noopener">monkvee.com</a>
         </div>
-        <div class="feature">
-          <div class="kicker">Flexible</div>
-          <div class="title">Flex mode for best-fit</div>
-          <div class="desc">If you allow it, see top matches ranked by nutrition error.</div>
-        </div>
-        <div class="feature">
-          <div class="kicker">Fast</div>
-          <div class="title">Search → portion → swaps</div>
-          <div class="desc">Works with your Foods sheet (USDA + OFF) and scales over time.</div>
+
+        <div class="pillRow">
+          <div class="pill">Medical-grade exchange logic</div>
+          <div class="pill">Strict or Flex mode</div>
+          <div class="pill">Portion-aware swaps</div>
         </div>
       </div>
+    </section>
 
-      <div class="ctaRow">
-        <button class="btn primary" id="enterBtn">Enter now</button>
-        <button class="btn ghost" id="demoBtn">Open demo</button>
-      </div>
+    <section class="splashRight">
+      <div class="glassCard splashCard">
+        <img class="swapLogo" alt="SWAP logo" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
 
-      <div class="fineprint">
-        Strict mode: no match = no swaps. Flex mode: ranked best-fit (clearly labeled).
+        <h2 class="welcomeTitle">Welcome to SWAP</h2>
+        <p class="welcomeSub">
+          Tell us the basics once. Then swap foods by portion size, with rules that stay honest.
+        </p>
+
+        <div class="apiRow">
+          <div id="apiDot" class="dot"></div>
+          <div id="apiText" class="apiText">Checking API…</div>
+          <button id="apiRetry" class="iconBtn" title="Retry API check" aria-label="Retry API check">↻</button>
+        </div>
+
+        <button id="getStartedBtn" class="primaryBtn">Get started</button>
+        <button id="demoBtn" class="secondaryBtn">Open demo</button>
+
+        <p class="micro">
+          Strict mode: no match = no swaps. Flex mode: ranked best-fit (clearly labeled).
+        </p>
       </div>
-    </div>
+    </section>
   </main>
 
-  <!-- HUD -->
-  <section id="app" class="app hidden">
-    <aside class="side">
-      <div class="brand">
-        <img class="brandLogo" alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
-        <div>
-          <div class="brandName">SWAP</div>
-          <div class="brandSub">Switch With Any Portion</div>
+  <!-- INTAKE (Wizard) -->
+  <section id="intake" class="intake hidden" aria-hidden="true">
+    <header class="topBar">
+      <div class="brandMini">
+        <img alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
+        <div class="brandMiniText">
+          <div class="brandMiniName">SWAP</div>
+          <div class="brandMiniSub">Switch With Any Portion</div>
         </div>
       </div>
+      <div class="topBarRight">
+        <button id="skipIntakeBtn" class="ghostBtn">Skip for now</button>
+      </div>
+    </header>
 
-      <div class="pillRow hudPill">
-        <div class="pill">
-          <span class="dot" id="apiDot2"></span>
-          <span id="apiText2">API: checking…</span>
+    <div class="wizardWrap">
+      <div class="wizardCard glassCard">
+        <div class="wizardHeader">
+          <div class="wizardTitle">Quick intake</div>
+          <div id="wizardStep" class="wizardStep">Step 1 of 3</div>
         </div>
-        <button class="iconBtn" id="apiRetry2" title="Retry">↻</button>
-      </div>
 
-      <nav class="nav">
-        <button class="navItem active" data-tab="targets">Targets</button>
-        <button class="navItem" data-tab="swap">Swap Engine</button>
-        <button class="navItem" data-tab="notes">Notes</button>
-      </nav>
+        <div class="wizardProgress" role="progressbar" aria-valuemin="1" aria-valuemax="3" aria-valuenow="1">
+          <div id="wizardProgFill" class="wizardProgFill"></div>
+        </div>
 
-      <div class="sideFooter">
-        <button class="btn tiny" id="backToSplash">← Back</button>
-      </div>
-    </aside>
-
-    <main class="main">
-      <!-- Targets -->
-      <section class="tab" id="tab-targets">
-        <header class="topbar">
-          <div>
-            <div class="title">Targets</div>
-            <div class="subtitle">Compute BMR/TDEE + macro targets (Mifflin–St Jeor).</div>
-          </div>
-          <div class="topActions">
-            <button class="btn ghost" id="demoToggle">Demo mode</button>
-            <button class="btn primary" id="computeBtn">Compute targets</button>
-          </div>
-        </header>
-
-        <div class="grid2">
-          <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Inputs</div>
-                <div class="cardSub">Height, weight, age, sex, activity, goal</div>
+        <!-- Step panels -->
+        <form id="intakeForm" class="wizardBody">
+          <!-- STEP 1 -->
+          <div class="stepPanel" data-step="1">
+            <div class="grid2">
+              <div class="field">
+                <label>Height</label>
+                <div class="row">
+                  <input id="height_cm" type="number" inputmode="decimal" placeholder="cm" min="50" max="250" />
+                  <div class="hint">cm</div>
+                </div>
               </div>
-              <span class="badge">Precision</span>
-            </div>
 
-            <div class="formGrid">
-              <label>Height
-                <div class="fieldRow">
-                  <input id="height" type="number" value="170" />
-                  <span class="unit">cm</span>
+              <div class="field">
+                <label>Weight</label>
+                <div class="row">
+                  <input id="weight_kg" type="number" inputmode="decimal" placeholder="kg" min="20" max="300" />
+                  <div class="hint">kg</div>
                 </div>
-              </label>
+              </div>
 
-              <label>Weight
-                <div class="fieldRow">
-                  <input id="weight" type="number" value="70" />
-                  <span class="unit">kg</span>
-                </div>
-              </label>
+              <div class="field">
+                <label>Age</label>
+                <input id="age" type="number" inputmode="numeric" placeholder="e.g., 32" min="10" max="120" />
+              </div>
 
-              <label>Age
-                <div class="fieldRow">
-                  <input id="age" type="number" value="32" />
-                  <span class="unit">yrs</span>
-                </div>
-              </label>
-
-              <label>Sex
+              <div class="field">
+                <label>Sex</label>
                 <select id="sex">
-                  <option>Male</option>
-                  <option>Female</option>
+                  <option value="">Select…</option>
+                  <option value="female">Female</option>
+                  <option value="male">Male</option>
                 </select>
-              </label>
+              </div>
+            </div>
+          </div>
 
-              <label>Activity
+          <!-- STEP 2 -->
+          <div class="stepPanel hidden" data-step="2">
+            <div class="grid2">
+              <div class="field">
+                <label>Activity</label>
                 <select id="activity">
-                  <option value="1.2">Low</option>
-                  <option value="1.375">Light</option>
-                  <option value="1.55">Moderate</option>
-                  <option value="1.725" selected>High</option>
-                  <option value="1.9">Athlete</option>
+                  <option value="">Select…</option>
+                  <option value="sedentary">Sedentary</option>
+                  <option value="light">Light</option>
+                  <option value="moderate">Moderate</option>
+                  <option value="active">Active</option>
+                  <option value="athlete">Athlete</option>
                 </select>
-              </label>
+              </div>
 
-              <label>Goal
+              <div class="field">
+                <label>Goal</label>
                 <select id="goal">
-                  <option value="maintain" selected>Maintain</option>
-                  <option value="cut">Fat loss</option>
-                  <option value="bulk">Muscle gain</option>
+                  <option value="">Select…</option>
+                  <option value="fat_loss">Fat loss</option>
+                  <option value="maintain">Maintain</option>
+                  <option value="muscle_gain">Muscle gain</option>
                 </select>
-              </label>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Output</div>
-                <div class="cardSub">BMR, TDEE, targets</div>
               </div>
-              <span class="badge" id="targetsBadge">Not computed</span>
             </div>
 
-            <div class="kpiGrid">
-              <div class="kpi"><div class="k">BMR</div><div class="v" id="bmrOut">—</div><div class="s">kcal/day</div></div>
-              <div class="kpi"><div class="k">TDEE</div><div class="v" id="tdeeOut">—</div><div class="s">kcal/day</div></div>
-              <div class="kpi"><div class="k">Target kcal</div><div class="v" id="kcalOut">—</div><div class="s">kcal/day</div></div>
-              <div class="kpi"><div class="k">Protein</div><div class="v" id="pOut">—</div><div class="s">g/day</div></div>
-              <div class="kpi"><div class="k">Carbs</div><div class="v" id="cOut">—</div><div class="s">g/day</div></div>
-              <div class="kpi"><div class="k">Fat</div><div class="v" id="fOut">—</div><div class="s">g/day</div></div>
+            <div class="callout">
+              We’ll calculate suggested daily calories + macros (you can ignore this and just use swaps).
             </div>
 
-            <div class="hint">
-              These targets help planning. Swaps are computed per-food, per-portion, with tolerance rules.
-            </div>
+            <div id="targetsPreview" class="targetsPreview hidden"></div>
           </div>
-        </div>
-      </section>
 
-      <!-- Swap -->
-      <section class="tab hidden" id="tab-swap">
-        <header class="topbar">
-          <div>
-            <div class="title">Swap Engine</div>
-            <div class="subtitle">Pick a food, enter portion, get equivalent swaps.</div>
-          </div>
-        </header>
-
-        <div class="grid2">
-          <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Food + filters</div>
-                <div class="cardSub">Search your Foods database</div>
-              </div>
-              <span class="badge">Strict by default</span>
-            </div>
-
-            <label>Food search</label>
-            <div class="searchRow">
-              <input id="q" placeholder="e.g., chicken breast" />
-              <button class="btn tiny ghost" id="clearFood">Clear</button>
-            </div>
-            <div id="results" class="results hidden"></div>
-
-            <div class="formGrid2">
-              <label>Portion
-                <input id="portion" type="number" value="2" />
-              </label>
-              <label>Unit
-                <select id="unit">
-                  <option value="g">g</option>
-                  <option value="oz" selected>oz</option>
-                  <option value="serving">serving</option>
-                  <option value="piece">piece</option>
-                </select>
-              </label>
-              <label>Diet (optional)
+          <!-- STEP 3 -->
+          <div class="stepPanel hidden" data-step="3">
+            <div class="grid2">
+              <div class="field">
+                <label>Diet tag (optional)</label>
                 <select id="diet">
-                  <option value="">—</option>
+                  <option value="">None</option>
+                  <option value="kosher">Kosher</option>
+                  <option value="halal">Halal</option>
                   <option value="vegan">Vegan</option>
                   <option value="vegetarian">Vegetarian</option>
-                  <option value="kosher">Kosher</option>
-                </select>
-              </label>
-              <label>Medical (optional)
-                <select id="medical">
-                  <option value="">—</option>
-                  <option value="low_sodium">Low sodium</option>
                   <option value="low_carb">Low carb</option>
+                  <option value="gluten_free">Gluten free</option>
                 </select>
-              </label>
-              <label>Allergies (comma separated)
-                <input id="allergies" placeholder="e.g., dairy, gluten, soy" />
-              </label>
-              <label>Mode
-                <select id="mode">
-                  <option value="strict" selected>Strict</option>
-                  <option value="flex">Flex</option>
-                </select>
-              </label>
-              <label>Cal tolerance
-                <select id="calTol">
-                  <option value="2">±2%</option>
-                  <option value="5" selected>±5%</option>
-                  <option value="10">±10%</option>
-                </select>
-              </label>
-              <label>Macro tolerance
-                <select id="macroTol">
-                  <option value="5">±5%</option>
-                  <option value="10" selected>±10%</option>
-                  <option value="15">±15%</option>
-                </select>
-              </label>
-            </div>
-
-            <button class="btn primary full" id="swapBtn" disabled>Find swaps</button>
-
-            <div class="mini" id="selectedFood">No food selected</div>
-          </div>
-
-          <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Results</div>
-                <div class="cardSub">Portion suggestions + error percent</div>
               </div>
-              <span class="badge" id="swapBadge">—</span>
+
+              <div class="field">
+                <label>Medical focus (optional)</label>
+                <select id="medical">
+                  <option value="">None</option>
+                  <option value="diabetes">Diabetes / blood sugar</option>
+                  <option value="prediabetes">Prediabetes</option>
+                  <option value="hypertension">Hypertension</option>
+                </select>
+              </div>
+
+              <div class="field fieldFull">
+                <label>Allergies (comma-separated, optional)</label>
+                <input id="allergies" type="text" placeholder="e.g., dairy, gluten, soy" />
+              </div>
             </div>
 
-            <div id="swapMeta" class="mini"></div>
-            <div id="swapList" class="swapList"></div>
+            <div class="callout subtle">
+              Allergies + diet filters will be applied when searching swaps.
+            </div>
           </div>
-        </div>
-      </section>
 
-      <!-- Notes -->
-      <section class="tab hidden" id="tab-notes">
-        <header class="topbar">
-          <div>
-            <div class="title">Notes</div>
-            <div class="subtitle">How this MVP behaves (so results stay “clinical”).</div>
+          <div class="wizardFooter">
+            <button id="backBtn" type="button" class="ghostBtn">Back</button>
+            <div class="wizardFooterRight">
+              <button id="nextBtn" type="button" class="primaryBtn">Continue</button>
+            </div>
           </div>
-        </header>
+        </form>
+      </div>
 
-        <div class="card">
-          <div class="notes">
-            <p><b>Core rule:</b> swaps are generated by matching calories and verifying macro tolerance.</p>
-            <p><b>Strict mode:</b> if a candidate doesn’t meet tolerance, it will not appear.</p>
-            <p><b>Missing columns:</b> GI/GL/satiety/insulin scores can be blank or 0 — MVP swaps only require calories + macros per gram.</p>
-            <p><b>Diet/allergy filters:</b> for MVP these rely on diet_tags_json and allergens_json in your Foods sheet. If those are empty, filtered searches may exclude items (safer behavior).</p>
-          </div>
+      <div class="wizardSide glassCard">
+        <div class="sideTitle">What you’ll do next</div>
+        <div class="sideList">
+          <div class="sideItem"><span class="sideDot"></span> Search a food from your database</div>
+          <div class="sideItem"><span class="sideDot"></span> Enter portion size (g/oz/serving)</div>
+          <div class="sideItem"><span class="sideDot"></span> Get strict or best-fit swaps</div>
         </div>
-      </section>
-    </main>
+      </div>
+    </div>
   </section>
 
-  <div id="toast" class="toast hidden"></div>
+  <!-- APP (HUD / Dashboard) -->
+  <section id="app" class="app hidden" aria-hidden="true">
+    <header class="topBar">
+      <div class="brandMini">
+        <img alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
+        <div class="brandMiniText">
+          <div class="brandMiniName">SWAP</div>
+          <div class="brandMiniSub">Switch With Any Portion</div>
+        </div>
+      </div>
+
+      <div class="topBarRight">
+        <div class="apiChip">
+          <span id="hudApiDot" class="dot"></span>
+          <span id="hudApiText">API</span>
+        </div>
+        <button id="openProfileBtn" class="ghostBtn">Profile</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="navTitle">Workspace</div>
+        <button class="navItem active" data-view="swapView">Swap Finder</button>
+        <button class="navItem" data-view="profileView">Profile</button>
+
+        <div class="sidebarFoot">
+          <div class="miniNote">Strict exchange logic • Portion-aware</div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <!-- Swap Finder -->
+        <section id="swapView" class="view">
+          <div class="gridMain">
+            <div class="glassCard cardPad">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Find a swap</div>
+                  <div class="cardSub">Search a food, set portion, choose strict vs flex, get swaps.</div>
+                </div>
+                <button id="resetSwapBtn" class="ghostBtn">Reset</button>
+              </div>
+
+              <div class="formGrid">
+                <div class="field fieldFull">
+                  <label>Food</label>
+                  <div class="searchWrap">
+                    <input id="foodSearch" type="text" placeholder="Start typing (e.g., chicken, oats, greek yogurt)…" autocomplete="off" />
+                    <div id="searchDrop" class="searchDrop hidden" role="listbox" aria-label="Food search results"></div>
+                  </div>
+                  <div id="pickedFoodHint" class="hintText hidden"></div>
+                </div>
+
+                <div class="field">
+                  <label>Portion</label>
+                  <input id="portion" type="number" inputmode="decimal" placeholder="e.g., 140" min="0" step="0.1" />
+                </div>
+
+                <div class="field">
+                  <label>Unit</label>
+                  <select id="unit">
+                    <option value="g">g</option>
+                    <option value="oz">oz</option>
+                    <option value="serving">serving</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Calories tolerance</label>
+                  <select id="calTol">
+                    <option value="0.02">±2%</option>
+                    <option value="0.05" selected>±5%</option>
+                    <option value="0.08">±8%</option>
+                    <option value="0.10">±10%</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label>Macro tolerance</label>
+                  <select id="macroTol">
+                    <option value="0.05">±5%</option>
+                    <option value="0.10" selected>±10%</option>
+                    <option value="0.15">±15%</option>
+                    <option value="0.20">±20%</option>
+                  </select>
+                </div>
+
+                <div class="field fieldFull">
+                  <div class="toggles">
+                    <label class="toggle">
+                      <input id="sameGroup" type="checkbox" checked />
+                      <span>Same group only</span>
+                    </label>
+                    <label class="toggle">
+                      <input id="flex" type="checkbox" />
+                      <span>Flex mode (best-fit)</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <button id="swapBtn" class="primaryBtn full">Get swaps</button>
+
+              <div id="swapError" class="errorBox hidden"></div>
+            </div>
+
+            <div class="glassCard cardPad">
+              <div class="cardTitle">Original vs Swap</div>
+              <div class="cardSub">We show honest deltas so you can trust the match.</div>
+
+              <div id="originalBox" class="macroBox muted">
+                Pick a food to see the breakdown.
+              </div>
+
+              <div class="divider"></div>
+
+              <div id="resultsBox" class="resultsBox">
+                <div class="emptyState">
+                  <div class="emptyTitle">No swaps yet</div>
+                  <div class="emptySub">Search a food, enter portion, then click “Get swaps”.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Profile -->
+        <section id="profileView" class="view hidden">
+          <div class="glassCard cardPad">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Your profile</div>
+                <div class="cardSub">Used for targets + preference filtering (optional).</div>
+              </div>
+              <button id="editIntakeBtn" class="ghostBtn">Edit intake</button>
+            </div>
+
+            <div id="profileBox" class="profileBox"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Mobile bottom nav -->
+    <nav class="bottomNav">
+      <button class="bnItem active" data-view="swapView">Swap</button>
+      <button class="bnItem" data-view="profileView">Profile</button>
+    </nav>
+
+    <!-- Simple modal -->
+    <div id="modal" class="modal hidden" aria-hidden="true">
+      <div class="modalBackdrop"></div>
+      <div class="modalCard glassCard">
+        <div class="modalHead">
+          <div id="modalTitle" class="modalTitle">Title</div>
+          <button id="modalClose" class="iconBtn" aria-label="Close">✕</button>
+        </div>
+        <div id="modalBody" class="modalBody"></div>
+      </div>
+    </div>
+  </section>
 
   <script src="app.js"></script>
 </body>
 </html>
-

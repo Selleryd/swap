@@ -3,411 +3,205 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#0b1220" />
   <title>SWAP — Switch With Any Portion</title>
-
+  <meta name="description" content="Switch With Any Portion — deterministic food swaps at any portion size." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-
-  <link rel="stylesheet" href="./styles.css" />
-  <script defer src="./app.js"></script>
+  <link rel="stylesheet" href="./style.css" />
 </head>
-
 <body>
-  <!-- Background -->
-  <div class="bg" aria-hidden="true">
-    <div class="bgGlow g1"></div>
-    <div class="bgGlow g2"></div>
-    <div class="bgGlow g3"></div>
-    <div class="bgGrid"></div>
-    <canvas id="particles" class="bgParticles"></canvas>
-  </div>
+  <canvas id="bg"></canvas>
 
-  <!-- SPLASH / WELCOME -->
-  <main id="splash" class="splash" role="main" aria-label="Welcome">
+  <!-- Splash -->
+  <section id="splash" class="splash">
     <div class="splashCard">
       <div class="splashTop">
-        <div class="brandRow">
-          <div class="logoWrap">
-            <img class="logoImg"
-              src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390"
-              alt="SWAP" loading="eager" decoding="async" />
-            <span class="logoHalo"></span>
-          </div>
-          <div class="brandText">
-            <div class="brandName">SWAP</div>
-            <div class="brandTag">Switch With Any Portion • precision swaps</div>
-          </div>
-        </div>
-
-        <div class="apiChip">
+        <img class="logo" alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
+        <div class="apiPill" title="API connectivity">
           <span id="apiDot" class="dot warn"></span>
-          <span id="apiStatus">API: checking…</span>
-          <button id="apiRetrySplash" class="iconBtn" title="Recheck API" aria-label="Recheck API">⟳</button>
+          <span id="apiText">API: checking…</span>
+          <button id="apiRetry" class="iconBtn" aria-label="Retry API check">↻</button>
         </div>
       </div>
 
-      <h1 class="splashTitle">
-        Precision food swaps at any portion size.
-      </h1>
-
-      <p class="splashSub">
-        Deterministic math + database-backed matching.
+      <h1 class="heroTitle">Switch With Any Portion.</h1>
+      <p class="heroSub">
+        Deterministic nutrition math + database-backed matching.
         Strict mode enforces calories & macros within ±2–5% (or your selected tolerance).
       </p>
 
-      <div class="splashTiles">
-        <div class="tile">
-          <div class="tileKicker">Medical-grade logic</div>
-          <div class="tileVal">Macro-safe exchange system</div>
-          <div class="tileSub">No “close enough” guessing in strict mode.</div>
+      <div class="featureRow">
+        <div class="feature">
+          <div class="kicker">Medical-grade logic</div>
+          <div class="featureTitle">Exchange-style swaps</div>
+          <div class="featureBody">No “close enough” guessing in strict mode.</div>
         </div>
-        <div class="tile">
-          <div class="tileKicker">Holistic</div>
-          <div class="tileVal">Satiety & digestion hints</div>
-          <div class="tileSub">Optional scoring layers over deterministic swaps.</div>
+        <div class="feature">
+          <div class="kicker">Holistic layer</div>
+          <div class="featureTitle">Satiety + digestion hints</div>
+          <div class="featureBody">Optional overlays (doesn’t change deterministic swaps).</div>
         </div>
-        <div class="tile">
-          <div class="tileKicker">Fast</div>
-          <div class="tileVal">Search → portion → swaps</div>
-          <div class="tileSub">Works instantly with demo DB; upgrades with your API.</div>
+        <div class="feature">
+          <div class="kicker">Fast</div>
+          <div class="featureTitle">Search → portion → swaps</div>
+          <div class="featureBody">Instant results with demo DB; upgrades with your API.</div>
         </div>
       </div>
 
-      <div class="splashActions">
-        <button id="enterBtn" class="btnPrimary">
-          Enter SWAP <span class="btnArrow" aria-hidden="true">→</span>
-        </button>
-        <button id="demoBtn" class="btnGhost">Open Demo</button>
+      <div class="ctaRow">
+        <button id="enterBtn" class="btn primary">Enter now</button>
+        <button id="demoBtn" class="btn ghost">Open demo</button>
       </div>
 
-      <div class="splashFoot">
-        <div class="fine">
-          Strict mode: no match = no swaps. Flex mode: ranked best-fit (clearly labeled).
-        </div>
+      <div class="tinyNote">
+        Strict: no match = no swaps. Flex: ranked best-fit (clearly labeled).
       </div>
     </div>
-  </main>
+  </section>
 
-  <!-- HUD / APP -->
-  <div id="app" class="app hidden" role="application" aria-label="SWAP App">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="sideTop">
-        <div class="brandRow small">
-          <div class="logoWrap small">
-            <img class="logoImg"
-              src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390"
-              alt="SWAP" loading="eager" decoding="async" />
-            <span class="logoHalo"></span>
-          </div>
-          <div class="brandText">
-            <div class="brandName">SWAP</div>
-            <div class="brandTag">precision swaps</div>
-          </div>
-        </div>
-
-        <div class="apiPill">
-          <span id="apiDot2" class="dot warn"></span>
-          <span id="apiStatus2">API: checking…</span>
-          <button id="apiRetry" class="iconBtn" title="Recheck API" aria-label="Recheck API">⟳</button>
+  <!-- HUD -->
+  <section id="hud" class="hud hidden">
+    <aside class="nav">
+      <div class="navTop">
+        <img class="navLogo" alt="SWAP" src="https://cdn.shopify.com/s/files/1/0550/0659/3185/files/Swap_logo_1.jpg?v=1766691390" />
+        <div class="navMeta">
+          <div class="navName">SWAP</div>
+          <div class="navSub">Switch With Any Portion</div>
         </div>
       </div>
 
-      <nav class="nav">
-        <button class="navItem active" data-tab="targets">
-          <span class="navIcon">⌁</span>
-          Targets
-        </button>
-        <button class="navItem" data-tab="swap">
-          <span class="navIcon">⇄</span>
-          Swap Engine
-        </button>
-        <button class="navItem" data-tab="notes">
-          <span class="navIcon">ⓘ</span>
-          Notes
-        </button>
-      </nav>
+      <div class="navApi">
+        <span id="apiDot2" class="dot warn"></span>
+        <span id="apiText2">API: checking…</span>
+        <button id="apiRetry2" class="iconBtn" aria-label="Retry API check">↻</button>
+      </div>
 
-      <div class="sideBottom">
-        <div class="hint">
-          Built for deterministic nutrition math.
-          Optional fields (GI/GL/satiety) enhance UX but do not change strict swap validity.
-        </div>
+      <button class="navItem active" data-tab="swap">Swap Engine</button>
+      <button class="navItem" data-tab="targets">Targets</button>
+      <button class="navItem" data-tab="notes">Notes</button>
+
+      <div class="navFooter">
+        <div class="pill">Strict swaps: deterministic</div>
+        <div class="pill">Powered by your Foods DB</div>
       </div>
     </aside>
 
-    <!-- Main -->
-    <section class="main">
+    <main class="main">
       <header class="topbar">
         <div>
-          <div id="pageTitle" class="pageTitle">Targets</div>
-          <div id="pageSub" class="pageSub">Compute BMR/TDEE + macro targets, then swap foods at any portion.</div>
+          <div class="pageTitle" id="pageTitle">Swap Engine</div>
+          <div class="pageSub">Pick a food, enter a portion, get precision swaps.</div>
         </div>
-        <div class="topbarActions">
-          <button id="demoBtn2" class="btnGhost">Demo mode</button>
-          <button id="computeTargets" class="btnPrimary">Compute targets</button>
+        <div class="topActions">
+          <button id="backToSplash" class="btn small ghost">Splash</button>
         </div>
       </header>
 
-      <div class="content">
-        <!-- TARGETS -->
-        <div id="tab-targets" class="tab active">
-          <div class="grid2">
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Targets</div>
-                  <div class="cardSub">Mifflin-St Jeor • activity • goal</div>
-                </div>
-                <span class="badge">Precision</span>
-              </div>
-
-              <div class="formGrid">
-                <label class="field">
-                  <span>Height</span>
-                  <div class="fieldRow">
-                    <input id="height" type="number" inputmode="decimal" value="170" />
-                    <span class="unit">cm</span>
-                  </div>
-                </label>
-
-                <label class="field">
-                  <span>Weight</span>
-                  <div class="fieldRow">
-                    <input id="weight" type="number" inputmode="decimal" value="70" />
-                    <span class="unit">kg</span>
-                  </div>
-                </label>
-
-                <label class="field">
-                  <span>Age</span>
-                  <div class="fieldRow">
-                    <input id="age" type="number" inputmode="numeric" value="32" />
-                    <span class="unit">yrs</span>
-                  </div>
-                </label>
-
-                <label class="field">
-                  <span>Sex</span>
-                  <select id="sex">
-                    <option>Male</option>
-                    <option>Female</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Activity</span>
-                  <select id="activity">
-                    <option value="Low">Low</option>
-                    <option value="Moderate">Moderate</option>
-                    <option value="High" selected>High</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Goal</span>
-                  <select id="goal">
-                    <option value="Lose">Lose</option>
-                    <option value="Maintain" selected>Maintain</option>
-                    <option value="Gain">Gain</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="cardFoot">
-                <button id="clearTargets" class="btnGhost">Clear</button>
-                <button id="computeTargets2" class="btnPrimary">Compute targets</button>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Output</div>
-                  <div class="cardSub">BMR, TDEE, targets</div>
-                </div>
-                <span id="targetStatus" class="badge muted">Not computed</span>
-              </div>
-
-              <div class="metricGrid">
-                <div class="metric">
-                  <div class="metricLabel">BMR</div>
-                  <div id="outBmr" class="metricVal">—</div>
-                  <div class="metricUnit">kcal/day</div>
-                </div>
-                <div class="metric">
-                  <div class="metricLabel">TDEE</div>
-                  <div id="outTdee" class="metricVal">—</div>
-                  <div class="metricUnit">kcal/day</div>
-                </div>
-                <div class="metric">
-                  <div class="metricLabel">Target kcal</div>
-                  <div id="outKcal" class="metricVal">—</div>
-                  <div class="metricUnit">kcal/day</div>
-                </div>
-                <div class="metric">
-                  <div class="metricLabel">Protein</div>
-                  <div id="outP" class="metricVal">—</div>
-                  <div class="metricUnit">g/day</div>
-                </div>
-                <div class="metric">
-                  <div class="metricLabel">Carbs</div>
-                  <div id="outC" class="metricVal">—</div>
-                  <div class="metricUnit">g/day</div>
-                </div>
-                <div class="metric">
-                  <div class="metricLabel">Fat</div>
-                  <div id="outF" class="metricVal">—</div>
-                  <div class="metricUnit">g/day</div>
-                </div>
-              </div>
-
-              <div class="helper">
-                Targets help planning. The swap engine enforces portion-based equivalence using your tolerances.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- SWAP -->
-        <div id="tab-swap" class="tab">
-          <div class="grid2">
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Swap Engine</div>
-                  <div class="cardSub">Search → portion → strict matches</div>
-                </div>
-                <span class="badge">Strict by default</span>
-              </div>
-
-              <div class="formGrid">
-                <label class="field span2">
-                  <span>Food search</span>
-                  <input id="foodQuery" placeholder="e.g., chicken breast" />
-                </label>
-
-                <label class="field">
-                  <span>Portion</span>
-                  <input id="portion" type="number" inputmode="decimal" value="2" />
-                </label>
-
-                <label class="field">
-                  <span>Unit</span>
-                  <select id="unit">
-                    <option value="g">g</option>
-                    <option value="oz">oz</option>
-                    <option value="serving">serving</option>
-                    <option value="piece" selected>piece</option>
-                    <option value="cup">cup</option>
-                    <option value="tbsp">tbsp</option>
-                    <option value="tsp">tsp</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Diet (optional)</span>
-                  <select id="diet">
-                    <option value="">—</option>
-                    <option value="vegan">Vegan</option>
-                    <option value="vegetarian">Vegetarian</option>
-                    <option value="gluten_free">Gluten-free</option>
-                    <option value="kosher">Kosher</option>
-                    <option value="halal">Halal</option>
-                    <option value="keto">Keto</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Medical (optional)</span>
-                  <select id="medical">
-                    <option value="">—</option>
-                    <option value="diabetes">Diabetes-friendly</option>
-                    <option value="hypertension">Low sodium</option>
-                    <option value="gerd">GERD-friendly</option>
-                  </select>
-                </label>
-
-                <label class="field span2">
-                  <span>Allergies (comma separated)</span>
-                  <input id="allergies" placeholder="e.g., dairy, gluten, soy" />
-                </label>
-
-                <label class="field">
-                  <span>Cal tolerance</span>
-                  <select id="calTol">
-                    <option value="2">±2%</option>
-                    <option value="5" selected>±5%</option>
-                    <option value="10">±10%</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Macro tolerance</span>
-                  <select id="macroTol">
-                    <option value="5">±5%</option>
-                    <option value="10" selected>±10%</option>
-                    <option value="15">±15%</option>
-                  </select>
-                </label>
-
-                <label class="field">
-                  <span>Mode</span>
-                  <select id="mode">
-                    <option value="strict" selected>Strict</option>
-                    <option value="flex">Flex</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="cardFoot">
-                <button id="swapBtn" class="btnPrimary">Find swaps</button>
-                <button id="swapClear" class="btnGhost">Clear</button>
-              </div>
-
-              <div id="swapMeta" class="helper"></div>
-            </div>
-
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Results</div>
-                  <div class="cardSub">Ranked by macro distance (strict filtered when enabled)</div>
-                </div>
-                <span id="resultsBadge" class="badge muted">No results</span>
-              </div>
-
-              <div id="results" class="results"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- NOTES -->
-        <div id="tab-notes" class="tab">
+      <!-- Swap tab -->
+      <section class="panel" data-panel="swap">
+        <div class="grid2">
           <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Notes</div>
-                <div class="cardSub">How SWAP enforces precision</div>
-              </div>
-              <span class="badge">Deterministic</span>
+            <div class="cardTitle">Input</div>
+
+            <label class="field">
+              <span>Food search</span>
+              <input id="q" type="text" placeholder="e.g., chicken breast" autocomplete="off" />
+              <div id="suggest" class="suggest hidden"></div>
+            </label>
+
+            <div class="row">
+              <label class="field">
+                <span>Portion</span>
+                <input id="portion" type="number" step="0.1" value="1" />
+              </label>
+              <label class="field">
+                <span>Unit</span>
+                <select id="unit">
+                  <option value="g">g</option>
+                  <option value="oz">oz</option>
+                  <option value="serving">serving</option>
+                  <option value="piece">piece</option>
+                </select>
+              </label>
             </div>
 
-            <div class="notes">
-              <p><b>Strict mode:</b> swaps must meet your calorie & macro tolerance. If none match, SWAP returns no swaps.</p>
-              <p><b>Flex mode:</b> returns best-fit results ranked by distance (clearly labeled as flex).</p>
-              <p><b>Missing optional fields</b> (GI/GL/satiety/insulin) won’t “break” swap validity—swap math uses calories/macros.</p>
-              <p><b>Branded (OFF) + Generic (USDA)</b> can coexist cleanly via prefixes: <code>off_</code> and <code>usda_</code>.</p>
+            <div class="row">
+              <label class="field">
+                <span>Cal tolerance</span>
+                <select id="calTol">
+                  <option value="2">±2%</option>
+                  <option value="3">±3%</option>
+                  <option value="5" selected>±5%</option>
+                  <option value="8">±8%</option>
+                  <option value="10">±10%</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Macro tolerance</span>
+                <select id="macroTol">
+                  <option value="5">±5%</option>
+                  <option value="8">±8%</option>
+                  <option value="10" selected>±10%</option>
+                  <option value="15">±15%</option>
+                  <option value="20">±20%</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="row">
+              <label class="field">
+                <span>Mode</span>
+                <select id="mode">
+                  <option value="strict" selected>Strict</option>
+                  <option value="flex">Flex</option>
+                </select>
+              </label>
+              <button id="findBtn" class="btn primary grow">Find swaps</button>
+            </div>
+
+            <div class="divider"></div>
+            <div id="selected" class="mini hidden"></div>
+            <div id="targetBox" class="mini hidden"></div>
+          </div>
+
+          <div class="card">
+            <div class="cardTitle">Results</div>
+            <div id="results" class="results">
+              <div class="empty">
+                Search a food, set a portion, then hit <b>Find swaps</b>.
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </section>
-  </div>
+      </section>
 
-  <!-- Toast -->
-  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+      <!-- Targets tab (MVP placeholder) -->
+      <section class="panel hidden" data-panel="targets">
+        <div class="card">
+          <div class="cardTitle">Targets (MVP)</div>
+          <div class="muted">
+            Keep this tab for your Mifflin-St Jeor + macro targets module.
+            Your swap engine is independent and deterministic.
+          </div>
+        </div>
+      </section>
+
+      <!-- Notes tab -->
+      <section class="panel hidden" data-panel="notes">
+        <div class="card">
+          <div class="cardTitle">Notes</div>
+          <div class="muted">
+            Strict swaps only use: calories + protein + carbs + fat (per gram) and portion conversion (units_json).
+            Optional scoring columns (GI/GL/satiety/insulin) can be blank without breaking strict swap correctness.
+          </div>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="./app.js"></script>
 </body>
 </html>

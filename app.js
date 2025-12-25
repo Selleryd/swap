@@ -1,386 +1,430 @@
 "use strict";
 
 /**
- * PASTE YOUR APPS SCRIPT WEB APP EXEC URL HERE (must end with /exec)
+ * IMPORTANT:
+ * Paste your Apps Script WEB APP /exec URL here.
  * Example:
  * const API_BASE = "https://script.google.com/macros/s/XXXXXXXXXXXX/exec";
  */
 const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
 
-/* ---------- Ambient background animation ---------- */
-const canvas = document.getElementById("bg");
-const ctx = canvas.getContext("2d");
-let W = 0, H = 0, blobs = [];
+// --- small demo DB (used if API is down or demo mode enabled) ---
+const DEMO_FOODS = [
+  { id:"usda_demo_chicken_breast", name:"Chicken breast, cooked", group:"meat", subgroup:"poultry", calories_per_g:1.65/1, protein_per_g:0.31, carbs_per_g:0, fat_per_g:0.036, units:{g:1,oz:28.3495,serving:100,piece:140} },
+  { id:"usda_demo_salmon", name:"Salmon, cooked", group:"meat", subgroup:"seafood", calories_per_g:2.06, protein_per_g:0.22, carbs_per_g:0, fat_per_g:0.13, units:{g:1,oz:28.3495,serving:100,piece:140} },
+  { id:"usda_demo_greek_yogurt", name:"Greek yogurt, plain", group:"dairy", subgroup:"yogurt", calories_per_g:0.97, protein_per_g:0.10, carbs_per_g:0.036, fat_per_g:0.045, units:{g:1,oz:28.3495,serving:170} },
+  { id:"usda_demo_rice", name:"White rice, cooked", group:"grain", subgroup:"rice", calories_per_g:1.30, protein_per_g:0.027, carbs_per_g:0.28, fat_per_g:0.003, units:{g:1,oz:28.3495,serving:158} }
+];
 
-function resize() {
-  W = canvas.width = window.innerWidth * devicePixelRatio;
-  H = canvas.height = window.innerHeight * devicePixelRatio;
-  canvas.style.width = window.innerWidth + "px";
-  canvas.style.height = window.innerHeight + "px";
-}
-window.addEventListener("resize", resize);
-resize();
-
-function makeBlobs() {
-  const n = Math.max(10, Math.floor(Math.min(window.innerWidth, 1400) / 120));
-  blobs = Array.from({ length: n }).map(() => ({
-    x: Math.random() * W,
-    y: Math.random() * H,
-    r: (80 + Math.random() * 220) * devicePixelRatio,
-    vx: (-0.12 + Math.random() * 0.24) * devicePixelRatio,
-    vy: (-0.10 + Math.random() * 0.20) * devicePixelRatio,
-    a: 0.08 + Math.random() * 0.10
-  }));
-}
-makeBlobs();
-
-function tick() {
-  ctx.clearRect(0, 0, W, H);
-  // subtle vignette
-  const g = ctx.createRadialGradient(W*0.5, H*0.5, 0, W*0.5, H*0.5, Math.max(W,H)*0.6);
-  g.addColorStop(0, "rgba(0,0,0,0)");
-  g.addColorStop(1, "rgba(0,0,0,0.45)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-
-  for (const b of blobs) {
-    b.x += b.vx; b.y += b.vy;
-    if (b.x < -b.r) b.x = W + b.r;
-    if (b.x > W + b.r) b.x = -b.r;
-    if (b.y < -b.r) b.y = H + b.r;
-    if (b.y > H + b.r) b.y = -b.r;
-
-    const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
-    grad.addColorStop(0, `rgba(65,214,164,${b.a})`);
-    grad.addColorStop(0.55, `rgba(120,160,255,${b.a * 0.8})`);
-    grad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  requestAnimationFrame(tick);
-}
-tick();
-
-/* ---------- UI helpers ---------- */
 const $ = (id) => document.getElementById(id);
+
+const state = {
+  apiOk: false,
+  demo: false,
+  selected: null, // {id,name,...}
+};
+
+// ---------- Toast ----------
 function toast(msg, ms = 2200) {
   const t = $("toast");
   t.textContent = msg;
   t.classList.remove("hidden");
-  setTimeout(() => t.classList.add("hidden"), ms);
-}
-function setApi(ok, text) {
-  const dotA = $("apiDot"), dotB = $("apiDot2");
-  const txtA = $("apiText"), txtB = $("apiText2");
-  const cls = ok === true ? "good" : ok === false ? "bad" : "warn";
-  [dotA, dotB].forEach(d => {
-    if (!d) return;
-    d.classList.remove("good","bad","warn");
-    d.classList.add(cls);
-  });
-  if (txtA) txtA.textContent = text;
-  if (txtB) txtB.textContent = text;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
-/* ---------- JSONP + Fetch (won’t hang) ---------- */
-function withTimeout(promise, ms, label="timeout") {
-  let t;
-  const timeout = new Promise((_, rej) => t = setTimeout(() => rej(new Error(label)), ms));
-  return Promise.race([promise.finally(() => clearTimeout(t)), timeout]);
-}
-
-function jsonp(url, timeoutMs = 2500) {
+// ---------- JSONP (no CORS issues) ----------
+function jsonp(url, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    const cbName = "SWAP_JSONP_" + Math.random().toString(16).slice(2);
+    const cb = "cb_" + Math.random().toString(36).slice(2);
     const script = document.createElement("script");
-    const cleanup = () => {
-      delete window[cbName];
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("JSONP timeout"));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timer);
       script.remove();
-    };
-    window[cbName] = (data) => {
+      try { delete window[cb]; } catch(_) {}
+    }
+
+    window[cb] = (data) => {
       cleanup();
       resolve(data);
     };
+
+    const sep = url.includes("?") ? "&" : "?";
+    script.src = `${url}${sep}callback=${cb}`;
     script.onerror = () => {
       cleanup();
-      reject(new Error("jsonp_error"));
+      reject(new Error("JSONP load error"));
     };
-    const sep = url.includes("?") ? "&" : "?";
-    script.src = `${url}${sep}callback=${cbName}`;
-    document.body.appendChild(script);
-    setTimeout(() => {
-      cleanup();
-      reject(new Error("jsonp_timeout"));
-    }, timeoutMs);
+    document.head.appendChild(script);
   });
 }
 
-async function apiGet(params) {
-  const qs = new URLSearchParams(params).toString();
-  const url = `${API_BASE}${API_BASE.includes("?") ? "&" : "?"}${qs}`;
-
-  // try fetch first (some deployments allow it)
-  try {
-    const res = await withTimeout(fetch(url, { method: "GET" }), 2500, "fetch_timeout");
-    const j = await res.json();
-    return j;
-  } catch (_) {
-    // fallback JSONP (reliable from GitHub Pages)
-    return await jsonp(url, 3000);
-  }
-}
-
+// ---------- API wrappers ----------
 async function apiPing() {
-  if (!API_BASE || API_BASE.includes("https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec")) {
-    setApi(null, "API: not set");
-    return false;
-  }
-  setApi(null, "API: checking…");
+  if (!API_BASE || API_BASE.includes("PASTE_YOUR_EXEC_URL_HERE")) throw new Error("API_BASE not set");
+  return jsonp(`${API_BASE}?action=ping`, 4500);
+}
+
+async function apiSearch(q) {
+  return jsonp(`${API_BASE}?action=search&q=${encodeURIComponent(q)}&limit=25`, 6500);
+}
+
+async function apiSwap(payload) {
+  const qs = new URLSearchParams(payload).toString();
+  return jsonp(`${API_BASE}?action=swap&${qs}`, 9000);
+}
+
+// ---------- UI: API status ----------
+function setApiStatus(ok, text) {
+  const dot1 = $("apiDot"), dot2 = $("apiDot2");
+  const t1 = $("apiText"), t2 = $("apiText2");
+
+  const color = ok ? "var(--good)" : "var(--warn)";
+  if (dot1) dot1.style.background = color;
+  if (dot2) dot2.style.background = color;
+
+  if (t1) t1.textContent = text;
+  if (t2) t2.textContent = text;
+
+  state.apiOk = !!ok;
+}
+
+async function checkApi() {
+  setApiStatus(false, "API: checking…");
   try {
-    const r = await apiGet({ action: "ping", ts: Date.now() });
-    if (r && r.ok) {
-      setApi(true, "API: connected");
-      return true;
-    }
-    setApi(false, "API: not responding");
-    return false;
+    const r = await apiPing();
+    if (r && r.ok) setApiStatus(true, `API: connected (${r.indexedItems ?? "ok"})`);
+    else setApiStatus(false, "API: not responding");
   } catch (e) {
-    setApi(false, "API: unreachable");
-    return false;
+    setApiStatus(false, "API: offline (demo available)");
   }
 }
 
-/* ---------- Demo DB (fallback) ---------- */
-const DEMO = [
-  { id:"usda_demo_chicken_breast", name:"Chicken breast (demo)", group:"meat", subgroup:"poultry",
-    calories_per_g:1.65, protein_per_g:0.31, carbs_per_g:0, fat_per_g:0.036, fiber_per_g:0,
-    units:{ g:1, oz:28.35, serving:140, piece:140 }, syn:["chicken breast","grilled chicken breast"] },
-  { id:"usda_demo_chicken_thigh", name:"Chicken thigh (demo)", group:"meat", subgroup:"poultry",
-    calories_per_g:2.15, protein_per_g:0.25, carbs_per_g:0, fat_per_g:0.13, fiber_per_g:0,
-    units:{ g:1, oz:28.35, serving:140, piece:140 }, syn:["chicken thigh"] },
-  { id:"usda_demo_salmon", name:"Salmon (demo)", group:"seafood", subgroup:"fish",
-    calories_per_g:2.08, protein_per_g:0.20, carbs_per_g:0, fat_per_g:0.13, fiber_per_g:0,
-    units:{ g:1, oz:28.35, serving:140, piece:140 }, syn:["salmon","atlantic salmon"] },
-  { id:"usda_demo_greek_yogurt", name:"Greek yogurt plain (demo)", group:"dairy", subgroup:"yogurt",
-    calories_per_g:0.59, protein_per_g:0.10, carbs_per_g:0.036, fat_per_g:0.004, fiber_per_g:0,
-    units:{ g:1, oz:28.35, serving:170 }, syn:["greek yogurt","yogurt plain"] },
-];
+// ---------- Background animation ----------
+function startBg() {
+  const c = $("bg");
+  const ctx = c.getContext("2d");
+  const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+  let w, h;
 
-function demoSearch(q, limit=10){
-  const s = q.toLowerCase().trim();
-  return DEMO.filter(f => (f.name+" "+(f.syn||[]).join(" ")).toLowerCase().includes(s))
-    .slice(0, limit)
-    .map(f => ({ id:f.id, name:f.name, group:f.group, subgroup:f.subgroup, units:f.units }));
+  const pts = Array.from({length: 70}, () => ({
+    x: Math.random(), y: Math.random(),
+    vx: (Math.random() - .5) * 0.00035,
+    vy: (Math.random() - .5) * 0.00035,
+    r: 1 + Math.random()*2.2
+  }));
+
+  function resize() {
+    w = window.innerWidth; h = window.innerHeight;
+    c.width = Math.floor(w * dpr);
+    c.height = Math.floor(h * dpr);
+    c.style.width = w + "px";
+    c.style.height = h + "px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  function tick() {
+    ctx.clearRect(0,0,w,h);
+
+    // soft gradient wash
+    const g = ctx.createRadialGradient(w*0.35,h*0.25, 10, w*0.35,h*0.25, Math.max(w,h)*0.9);
+    g.addColorStop(0, "rgba(140,231,207,.10)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+
+    // points + links
+    for (const p of pts) {
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 0 || p.x > 1) p.vx *= -1;
+      if (p.y < 0 || p.y > 1) p.vy *= -1;
+    }
+
+    for (let i=0;i<pts.length;i++){
+      const a = pts[i];
+      const ax = a.x*w, ay = a.y*h;
+      for (let j=i+1;j<pts.length;j++){
+        const b = pts[j];
+        const bx = b.x*w, by = b.y*h;
+        const dx = ax-bx, dy = ay-by;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < 140){
+          ctx.globalAlpha = (1 - dist/140) * 0.22;
+          ctx.strokeStyle = "rgba(255,255,255,1)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(ax,ay);
+          ctx.lineTo(bx,by);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = "rgba(255,255,255,.9)";
+      ctx.beginPath();
+      ctx.arc(ax, ay, a.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    requestAnimationFrame(tick);
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+  tick();
 }
 
-/* ---------- App state ---------- */
-let apiOk = false;
-let selected = null;
-
-function showSplash(){ $("splash").classList.remove("hidden"); $("hud").classList.add("hidden"); }
-function showHud(){ $("splash").classList.add("hidden"); $("hud").classList.remove("hidden"); }
-
-function setTab(tab){
-  document.querySelectorAll(".navItem").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("hidden", p.dataset.panel !== tab));
-  $("pageTitle").textContent = tab === "swap" ? "Swap Engine" : tab === "targets" ? "Targets" : "Notes";
+// ---------- Tabs ----------
+function showTab(name) {
+  document.querySelectorAll(".navItem").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  $("tab-targets").classList.toggle("hidden", name !== "targets");
+  $("tab-swap").classList.toggle("hidden", name !== "swap");
+  $("tab-notes").classList.toggle("hidden", name !== "notes");
 }
 
-function renderSelected() {
-  if (!selected) { $("selected").classList.add("hidden"); return; }
-  $("selected").classList.remove("hidden");
-  $("selected").innerHTML = `
-    <div style="font-weight:900">${selected.name}</div>
-    <div class="muted" style="margin-top:4px">${selected.group} • ${selected.subgroup}</div>
-  `;
+// ---------- Targets logic ----------
+function computeTargets() {
+  const h = Number($("height").value || 0);
+  const w = Number($("weight").value || 0);
+  const age = Number($("age").value || 0);
+  const sex = $("sex").value;
+  const act = Number($("activity").value || 1.2);
+  const goal = $("goal").value;
+
+  if (!(h>0 && w>0 && age>0)) return toast("Enter height/weight/age");
+
+  // Mifflin-St Jeor
+  const s = (sex === "Male") ? 5 : -161;
+  const bmr = 10*w + 6.25*h - 5*age + s;
+  const tdee = bmr * act;
+
+  let targetKcal = tdee;
+  if (goal === "cut") targetKcal = tdee * 0.85;
+  if (goal === "bulk") targetKcal = tdee * 1.10;
+
+  // Simple macro targets (can refine later):
+  // protein ~ 1.8g/kg, fat ~ 0.8g/kg, carbs remainder
+  const protein = 1.8 * w;
+  const fat = 0.8 * w;
+  const kcalFromP = protein * 4;
+  const kcalFromF = fat * 9;
+  const carbs = Math.max(0, (targetKcal - kcalFromP - kcalFromF) / 4);
+
+  $("bmrOut").textContent = Math.round(bmr);
+  $("tdeeOut").textContent = Math.round(tdee);
+  $("kcalOut").textContent = Math.round(targetKcal);
+  $("pOut").textContent = Math.round(protein);
+  $("cOut").textContent = Math.round(carbs);
+  $("fOut").textContent = Math.round(fat);
+
+  $("targetsBadge").textContent = "Computed";
+  toast("Targets computed");
 }
 
-function renderTargetBox(target) {
-  if (!target) { $("targetBox").classList.add("hidden"); return; }
-  $("targetBox").classList.remove("hidden");
-  $("targetBox").innerHTML = `
-    <div style="font-weight:900;margin-bottom:8px">Target nutrition</div>
-    <div class="muted">kcal: <b>${target.kcal}</b> • P: <b>${target.protein_g}g</b> • C: <b>${target.carbs_g}g</b> • F: <b>${target.fat_g}g</b> • Fiber: <b>${target.fiber_g}g</b></div>
-  `;
-}
+// ---------- Swap UI ----------
+let searchTimer = null;
 
-function renderResults(swaps, mode) {
+function renderResults(list) {
   const box = $("results");
-  if (!swaps || !swaps.length) {
-    box.innerHTML = `<div class="empty">No swaps found. Try Flex mode or widen tolerances.</div>`;
+  if (!list || !list.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
     return;
   }
-  box.innerHTML = swaps.map(s => `
-    <div class="rCard">
-      <div class="rTop">
-        <div>
-          <div class="rName">${s.name}</div>
-          <div class="rSub">${s.group} • ${s.subgroup} • ${s.grams}g (${s.portion.amount} ${s.portion.unit})</div>
-        </div>
-        <div class="badge ${s.pass ? "pass" : "flex"}">${s.pass ? "Strict pass" : (mode==="flex" ? "Flex" : "—")}</div>
+  box.classList.remove("hidden");
+  box.innerHTML = list.map(r => `
+    <div class="result" data-id="${r.id}">
+      <div class="r1">
+        <div class="name">${escapeHtml(r.name || r.id)}</div>
+        <div class="muted">${escapeHtml(r.group || "")}</div>
       </div>
-      <div class="rGrid">
-        <div class="metric"><div class="k">kcal</div><div class="v">${s.kcal}</div></div>
-        <div class="metric"><div class="k">Protein</div><div class="v">${s.protein_g}g</div></div>
-        <div class="metric"><div class="k">Carbs</div><div class="v">${s.carbs_g}g</div></div>
-        <div class="metric"><div class="k">Fat</div><div class="v">${s.fat_g}g</div></div>
-      </div>
-      <div class="muted" style="margin-top:10px;font-size:12.5px">
-        Δ% — kcal ${s.deltas_pct.kcal} • P ${s.deltas_pct.protein} • C ${s.deltas_pct.carbs} • F ${s.deltas_pct.fat}
+      <div class="meta">
+        ${escapeHtml(r.subgroup || "")}
+        • ${r.per100g ? `${r.per100g.kcal} kcal/100g` : ""}
       </div>
     </div>
   `).join("");
-}
 
-/* ---------- Suggest / Search ---------- */
-let suggestTimer = null;
-
-async function refreshSuggest() {
-  const q = $("q").value.trim();
-  const sug = $("suggest");
-  if (q.length < 2) { sug.classList.add("hidden"); sug.innerHTML=""; return; }
-
-  let results = [];
-  try {
-    if (apiOk) {
-      const r = await apiGet({ action: "search", q, limit: 8, ts: Date.now() });
-      results = (r && r.ok) ? r.results : [];
-    } else {
-      results = demoSearch(q, 8);
-    }
-  } catch (_) {
-    results = demoSearch(q, 8);
-  }
-
-  if (!results.length) { sug.classList.add("hidden"); sug.innerHTML=""; return; }
-
-  sug.innerHTML = results.map(r => `
-    <div class="sRow" data-id="${r.id}">
-      <div class="sLeft">
-        <div class="sName">${r.name}</div>
-        <div class="sMeta">${r.group} • ${r.subgroup}</div>
-      </div>
-      <div class="sMeta">select</div>
-    </div>
-  `).join("");
-  sug.classList.remove("hidden");
-
-  sug.querySelectorAll(".sRow").forEach(row => {
-    row.addEventListener("click", async () => {
-      const id = row.dataset.id;
-      await selectFood(id);
-      sug.classList.add("hidden");
+  box.querySelectorAll(".result").forEach(el => {
+    el.addEventListener("click", async () => {
+      const id = el.getAttribute("data-id");
+      state.selected = list.find(x => x.id === id) || { id, name: id };
+      $("selectedFood").innerHTML = `<b>Selected:</b> ${escapeHtml(state.selected.name)} <span style="color:var(--muted)">(${escapeHtml(state.selected.id)})</span>`;
+      $("swapBtn").disabled = false;
+      box.classList.add("hidden");
     });
   });
 }
 
-async function selectFood(id) {
-  try {
-    if (apiOk) {
-      const r = await apiGet({ action: "food", id, ts: Date.now() });
-      if (r && r.ok) selected = r.food;
-      else selected = null;
-    } else {
-      selected = DEMO.find(x => x.id === id) || null;
-    }
-  } catch (_) {
-    selected = DEMO.find(x => x.id === id) || null;
+async function doSearch(q) {
+  if (!q || q.length < 2) return renderResults([]);
+  if (state.demo || !state.apiOk) {
+    const hits = DEMO_FOODS
+      .filter(f => (f.name + " " + f.id + " " + f.group + " " + f.subgroup).toLowerCase().includes(q.toLowerCase()))
+      .slice(0, 25)
+      .map(f => ({ id:f.id, name:f.name, group:f.group, subgroup:f.subgroup, per100g:{kcal: (f.calories_per_g*100).toFixed(1)} }));
+    return renderResults(hits);
   }
-  renderSelected();
-  toast("Selected: " + (selected ? selected.name : "none"));
+  const r = await apiSearch(q);
+  renderResults(r.results || []);
 }
 
-/* ---------- Swap ---------- */
-async function runSwap() {
-  const q = $("q").value.trim();
-  if (!selected && q.length < 2) { toast("Search and select a food first"); return; }
+function renderSwapList(swaps, mode) {
+  const list = $("swapList");
+  if (!swaps || !swaps.length) {
+    list.innerHTML = `<div class="mini">No swaps found. Try flex mode or loosen tolerances.</div>`;
+    return;
+  }
+  list.innerHTML = swaps.map(s => `
+    <div class="swapItem">
+      <div class="swapTop">
+        <div>
+          <div class="swapName">${escapeHtml(s.name)}</div>
+          <div class="swapPortion">${escapeHtml(s.portion)} • ${escapeHtml(s.group || "")}</div>
+        </div>
+        <div class="badge">${mode === "strict" ? "Strict" : (s.strictPass ? "Flex (passes strict)" : "Flex (best-fit)")}</div>
+      </div>
 
-  const portion = $("portion").value;
-  const unit = $("unit").value;
-  const calTol = $("calTol").value;
-  const macroTol = $("macroTol").value;
-  const mode = $("mode").value;
+      <div class="swapGrid">
+        ${cell("kcal", s.totals.kcal, `Δ ${s.diffPct.kcal}%`)}
+        ${cell("P", s.totals.p, `Δ ${s.diffPct.p}%`)}
+        ${cell("C", s.totals.c, `Δ ${s.diffPct.c}%`)}
+        ${cell("F", s.totals.f, `Δ ${s.diffPct.f}%`)}
+      </div>
+    </div>
+  `).join("");
+}
+
+function cell(k, v, d) {
+  return `
+    <div class="cell">
+      <div class="ck">${k}</div>
+      <div class="cv">${escapeHtml(String(v))}</div>
+      <div class="cd">${escapeHtml(d)}</div>
+    </div>
+  `;
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m]));
+}
+
+async function findSwaps() {
+  if (!state.selected) return toast("Pick a food first");
+  const portion = $("portion").value || "1";
+  const unit = $("unit").value || "g";
+  const diet = $("diet").value || "";
+  const medical = $("medical").value || "";
+  const allergies = $("allergies").value || "";
+  const mode = $("mode").value || "strict";
+  const calTol = $("calTol").value || "5";
+  const macroTol = $("macroTol").value || "10";
+
+  $("swapBadge").textContent = "Working…";
+  $("swapMeta").textContent = "";
+  $("swapList").innerHTML = "";
 
   try {
-    if (apiOk) {
-      const r = await apiGet({
-        action: "swap",
-        id: selected ? selected.id : "",
-        q: selected ? "" : q,
-        portion,
-        unit,
-        calTol,
-        macroTol,
-        mode,
-        limit: 12,
-        ts: Date.now()
-      });
-
-      if (!r || !r.ok) {
-        renderResults([], mode);
-        toast("No swaps (API)");
-        return;
-      }
-      selected = r.source ? (selected || { id:r.source.id, name:r.source.name, group:r.source.group, subgroup:r.source.subgroup }) : selected;
-      renderSelected();
-      renderTargetBox(r.target);
-      renderResults(r.swaps, mode);
+    if (state.demo || !state.apiOk) {
+      toast("Demo mode: swaps require API");
+      $("swapBadge").textContent = "Demo";
+      $("swapList").innerHTML = `<div class="mini">Connect API to compute real swaps from your Foods sheet.</div>`;
       return;
     }
 
-    // demo behavior (simple)
-    const hits = demoSearch(q, 1);
-    const src = selected || (hits.length ? DEMO.find(x => x.id === hits[0].id) : null);
-    if (!src) { toast("No demo match"); return; }
+    const r = await apiSwap({
+      id: state.selected.id,
+      portion,
+      unit,
+      diet,
+      medical,
+      allergies,
+      mode,
+      calTol,
+      macroTol,
+      limit: 12
+    });
 
-    const grams = unit === "g" ? Number(portion) : unit === "oz" ? Number(portion) * 28.35 : (src.units[unit] ? Number(portion) * src.units[unit] : Number(portion) * (src.units.serving || 100));
-    const target = {
-      kcal: +(src.calories_per_g * grams).toFixed(2),
-      protein_g: +(src.protein_per_g * grams).toFixed(2),
-      carbs_g: +(src.carbs_per_g * grams).toFixed(2),
-      fat_g: +(src.fat_per_g * grams).toFixed(2),
-      fiber_g: +((src.fiber_per_g || 0) * grams).toFixed(2),
-    };
-    renderTargetBox(target);
-    renderResults([], mode);
-    toast("Demo mode: connect API for real swaps");
+    if (!r || !r.ok) throw new Error((r && r.error) ? r.error : "Swap failed");
+
+    $("swapBadge").textContent = `${r.meta.returned} swaps`;
+    $("swapMeta").textContent = `Base: ${r.base.name} • ${r.base.portion.grams} g • ${r.base.totals.kcal} kcal • pool: ${r.meta.candidatePool}`;
+    renderSwapList(r.swaps, r.mode);
+
   } catch (e) {
-    renderResults([], mode);
-    toast("Swap failed. Check API URL + deployment.");
+    $("swapBadge").textContent = "Error";
+    $("swapList").innerHTML = `<div class="mini">${escapeHtml(String(e.message || e))}</div>`;
   }
 }
 
-/* ---------- Wiring ---------- */
-$("enterBtn").addEventListener("click", () => { showHud(); setTab("swap"); });
-$("demoBtn").addEventListener("click", () => { showHud(); setTab("swap"); toast("Demo mode active"); });
+// ---------- Splash / HUD ----------
+function enterApp() {
+  $("splash").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  showTab("targets");
+}
 
-$("backToSplash").addEventListener("click", () => showSplash());
+// ---------- Wire up ----------
+function main() {
+  startBg();
 
-document.querySelectorAll(".navItem").forEach(btn => {
-  btn.addEventListener("click", () => setTab(btn.dataset.tab));
-});
+  // Nav
+  document.querySelectorAll(".navItem").forEach(btn => {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+  });
 
-$("findBtn").addEventListener("click", runSwap);
+  // Splash buttons
+  $("enterBtn").addEventListener("click", enterApp);
+  $("demoBtn").addEventListener("click", () => {
+    state.demo = true;
+    toast("Demo mode enabled");
+    enterApp();
+    setApiStatus(false, "API: demo mode");
+  });
 
-$("q").addEventListener("input", () => {
-  clearTimeout(suggestTimer);
-  suggestTimer = setTimeout(refreshSuggest, 180);
-});
+  // Back
+  $("backToSplash").addEventListener("click", () => {
+    $("app").classList.add("hidden");
+    $("splash").classList.remove("hidden");
+  });
 
-$("apiRetry").addEventListener("click", async () => {
-  apiOk = await apiPing();
-  toast(apiOk ? "API connected" : "API not reachable");
-});
-$("apiRetry2").addEventListener("click", async () => {
-  apiOk = await apiPing();
-  toast(apiOk ? "API connected" : "API not reachable");
-});
+  // API retry
+  $("apiRetry").addEventListener("click", checkApi);
+  $("apiRetry2").addEventListener("click", checkApi);
 
-/* Boot */
-(async function init(){
-  showSplash();
-  apiOk = await apiPing();
-})();
+  // Targets
+  $("computeBtn").addEventListener("click", computeTargets);
+  $("demoToggle").addEventListener("click", () => {
+    state.demo = !state.demo;
+    toast(state.demo ? "Demo mode enabled" : "Demo mode disabled");
+    if (state.demo) setApiStatus(false, "API: demo mode");
+    else checkApi();
+  });
+
+  // Swap search
+  $("q").addEventListener("input", (ev) => {
+    const q = ev.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => doSearch(q), 220);
+  });
+
+  $("clearFood").addEventListener("click", () => {
+    state.selected = null;
+    $("q").value = "";
+    $("results").classList.add("hidden");
+    $("swapBtn").disabled = true;
+    $("selectedFood").textContent = "No food selected";
+  });
+
+  $("swapBtn").addEventListener("click", findSwaps);
+
+  // Initial API check (won’t hang)
+  checkApi();
+}
+
+main();

@@ -50,7 +50,7 @@ a{color:inherit}
 }
 
 .cardPad{padding:18px}
-.divider{height:1px;background:var(--line);margin:16px 0}
+.divider{height:1px;background:var(--line);margin:17px 0}
 
 /* Buttons */
 .primaryBtn{

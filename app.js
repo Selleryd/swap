@@ -16,7 +16,7 @@
  */
 
 // 1) PASTE YOUR APPS SCRIPT /exec URL HERE:
-const API_BASE = "https://script.google.com/macros/s/PASTE_YOURS_HERE/exec";
+const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
 
 // Demo mode (no API): lets you see the UI
 const DEMO_MODE = false;

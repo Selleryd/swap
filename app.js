@@ -1,7 +1,7 @@
 // app.js — SWAP (GitHub Pages UI)
 // Paste your Apps Script Web App /exec URL here if you have one.
 // Example: const API_BASE = "https://script.google.com/macros/s/XXXX/exec";
-const API_BASE = "";
+const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
 
 // -----------------------------
 // Utilities

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SWAP • Switch With Any Portion</title>
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%0A%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2216%22%20fill%3D%22%23ffffff%22/%3E%0A%3Cpath%20d%3D%22M16%2032c8-10%2024-10%2032%200%22%20fill%3D%22none%22%20stroke%3D%22%2316a34a%22%20stroke-width%3D%227%22%20stroke-linecap%3D%22round%22/%3E%0A%3Cpath%20d%3D%22M16%2032c8%2010%2024%2010%2032%200%22%20fill%3D%22none%22%20stroke%3D%22%230ea5e9%22%20stroke-width%3D%223%22%20stroke-linecap%3D%22round%22%20opacity%3D%22.7%22/%3E%0A%3Ccircle%20cx%3D%2246%22%20cy%3D%2224%22%20r%3D%224%22%20fill%3D%22%2316a34a%22%20opacity%3D%22.85%22/%3E%0A%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <canvas id="bg" aria-hidden="true"></canvas>
+
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="#" id="homeLink" aria-label="SWAP home">
+        <div class="brand__mark" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 64 64" fill="none">
+            <path d="M16 32c8-10 24-10 32 0" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+            <path d="M16 32c8 10 24 10 32 0" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+            <circle cx="46" cy="24" r="4" fill="currentColor" opacity=".8"/>
+          </svg>
+        </div>
+        <div class="brand__text">
+          <div class="brand__name">SWAP</div>
+          <div class="brand__sub">Switch With Any Portion</div>
+        </div>
+      </a>
+
+      <nav class="nav">
+        <button class="nav__btn" id="navSwap" type="button">Swap Finder</button>
+        <button class="nav__btn" id="navProfile" type="button">Profile</button>
+      </nav>
+
+      <div class="topbar__right">
+        <div class="status" id="apiStatus" title="API status">
+          <span class="status__dot" aria-hidden="true"></span>
+          <span class="status__text" id="apiStatusText">Connecting…</span>
+        </div>
+        <button class="btn btn--ghost" id="logoutBtn" type="button" title="Reset this device profile">Reset</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+
+    <!-- Splash / marketing -->
+    <section class="view" id="viewSplash">
+      <div class="hero">
+        <div class="hero__left" role="img" aria-label="Lifestyle photo">
+          <!-- No overlay (per request). Replace this file with your own hero image. -->
+          <img class="hero__img" alt="" src="assets/hero.jpg">
+        </div>
+
+        <div class="hero__right">
+          <div class="card card--glass heroCard">
+            <div class="heroCard__badge">
+              <span class="pill pill--soft">Open-source beta</span>
+              <span class="pill pill--soft">Portion-aware matching</span>
+            </div>
+
+            <div class="heroCard__logo" aria-hidden="true">
+              <div class="logoPlate">
+                <div class="logoPlate__mark">SWAP</div>
+              </div>
+            </div>
+
+            <h1 class="h1">Swap foods by portion size — fast, honest, and database-backed.</h1>
+            <p class="muted">
+              Enter what you ate (grams, ounces, servings, pieces, and more). SWAP finds close matches from the live food database.
+            </p>
+
+            <div class="heroCard__actions">
+              <button class="btn btn--primary" id="getStartedBtn" type="button">Get started</button>
+              <button class="btn" id="launchBtn" type="button">Launch app</button>
+            </div>
+
+            <div class="heroCard__fine muted">
+              No accounts. Your profile saves on this device.
+            </div>
+          </div>
+
+          <div class="miniRow">
+            <div class="miniCard">
+              <div class="miniTitle">How it works</div>
+              <div class="miniText">Pick a food → choose a portion → get best-fit swaps.</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniTitle">Built for the public</div>
+              <div class="miniText">Clean UI. No internal knobs exposed. High-signal results.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Intake (saved locally) -->
+    <section class="view hidden" id="viewIntake">
+      <div class="centerWrap">
+        <div class="card card--glass intakeCard">
+          <div class="intakeHead">
+            <div>
+              <div class="kicker">Quick intake</div>
+              <div class="h2">Set your profile once.</div>
+            </div>
+            <div class="step" id="intakeStepLabel">Step 1 of 2</div>
+          </div>
+
+          <div class="progress">
+            <div class="progress__bar" id="intakeProgress"></div>
+          </div>
+
+          <form id="intakeForm" class="intakeForm" autocomplete="on">
+            <!-- Step 1 -->
+            <div class="intakeStep" data-step="1">
+              <div class="grid2">
+                <div class="field">
+                  <label for="heightVal">Height</label>
+                  <div class="fieldRow">
+                    <input id="heightVal" inputmode="decimal" placeholder="e.g., 70" />
+                    <select id="heightUnit" aria-label="Height unit">
+                      <option value="cm">cm</option>
+                      <option value="in">in</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="weightVal">Weight</label>
+                  <div class="fieldRow">
+                    <input id="weightVal" inputmode="decimal" placeholder="e.g., 165" />
+                    <select id="weightUnit" aria-label="Weight unit">
+                      <option value="kg">kg</option>
+                      <option value="lb">lb</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="ageVal">Age</label>
+                  <input id="ageVal" inputmode="numeric" placeholder="e.g., 32" />
+                </div>
+
+                <div class="field">
+                  <label for="sexVal">Sex</label>
+                  <select id="sexVal">
+                    <option value="">Select…</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="actions">
+                <button class="btn btn--primary" id="intakeNext1" type="button">Continue</button>
+                <button class="btn btn--ghost" id="intakeSkip" type="button">Skip for now</button>
+              </div>
+            </div>
+
+            <!-- Step 2 -->
+            <div class="intakeStep hidden" data-step="2">
+              <div class="grid2">
+                <div class="field">
+                  <label for="activityVal">Activity</label>
+                  <select id="activityVal">
+                    <option value="sedentary">Sedentary</option>
+                    <option value="light">Light</option>
+                    <option value="moderate" selected>Moderate</option>
+                    <option value="high">High</option>
+                    <option value="athlete">Athlete</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label for="goalVal">Goal</label>
+                  <select id="goalVal">
+                    <option value="fat_loss">Fat loss</option>
+                    <option value="maintenance" selected>Maintenance</option>
+                    <option value="lean_gain">Lean gain</option>
+                    <option value="muscle_gain">Muscle gain</option>
+                    <option value="recomp">Recomposition</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label for="dietVal">Diet (optional)</label>
+                  <select id="dietVal">
+                    <option value="">None</option>
+                    <option value="omnivore">Omnivore</option>
+                    <option value="kosher">Kosher</option>
+                    <option value="halal">Halal</option>
+                    <option value="vegetarian">Vegetarian</option>
+                    <option value="vegan">Vegan</option>
+                    <option value="keto">Keto</option>
+                    <option value="low_carb">Low-carb</option>
+                    <option value="mediterranean">Mediterranean</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label for="medicalVal">Medical focus (optional)</label>
+                  <select id="medicalVal">
+                    <option value="">None</option>
+                    <option value="diabetes">Diabetes</option>
+                    <option value="prediabetes">Prediabetes</option>
+                    <option value="pcos">PCOS</option>
+                    <option value="hypertension">Hypertension</option>
+                    <option value="ckd">CKD</option>
+                  </select>
+                </div>
+
+                <div class="field full">
+                  <label for="allergiesVal">Allergies (optional)</label>
+                  <input id="allergiesVal" placeholder="e.g., dairy, gluten, soy" />
+                  <div class="help muted">Used to filter swaps as the database grows.</div>
+                </div>
+              </div>
+
+              <div class="actions">
+                <button class="btn btn--ghost" id="intakeBack" type="button">Back</button>
+                <button class="btn btn--primary" id="intakeSave" type="button">Finish</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- App -->
+    <section class="view hidden" id="viewApp">
+      <div class="appGrid">
+        <aside class="side">
+          <button class="side__tab side__tab--active" id="tabSwap" type="button">
+            <span class="side__icon">⇄</span>
+            <span>Swap Finder</span>
+          </button>
+          <button class="side__tab" id="tabProfile" type="button">
+            <span class="side__icon">⚙</span>
+            <span>Profile</span>
+          </button>
+
+          <div class="side__note muted">
+            High-end UI. Open-source heart.
+          </div>
+        </aside>
+
+        <section class="main">
+          <!-- Swap finder -->
+          <div id="panelSwap" class="panel">
+            <div class="gridCols">
+              <div class="card card--glass">
+                <div class="cardHead">
+                  <div>
+                    <div class="h3">Find a swap</div>
+                    <div class="muted">Search a food, set a portion, then get swaps.</div>
+                  </div>
+                  <button class="btn btn--ghost" id="resetSwap" type="button">Reset</button>
+                </div>
+
+                <div class="field">
+                  <label for="foodSearch">Food</label>
+                  <div class="searchWrap">
+                    <input id="foodSearch" placeholder="Start typing… (e.g., chicken)" autocomplete="off" />
+                    <div id="searchDrop" class="searchDrop hidden" role="listbox" aria-label="Search results"></div>
+                  </div>
+                  <div class="pickLine" id="pickedLine"></div>
+                </div>
+
+                <div class="grid2">
+                  <div class="field">
+                    <label for="portionVal">Portion</label>
+                    <input id="portionVal" inputmode="decimal" placeholder="e.g., 140" />
+                  </div>
+
+                  <div class="field">
+                    <label for="portionUnit">Unit</label>
+                    <select id="portionUnit">
+                      <option value="g">g</option>
+                      <option value="oz">oz</option>
+                      <option value="serving" selected>serving</option>
+                      <option value="piece">piece</option>
+                      <option value="cup">cup</option>
+                      <option value="tbsp">tbsp</option>
+                      <option value="tsp">tsp</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="toggles">
+                  <label class="toggle">
+                    <input id="sameGroup" type="checkbox" checked />
+                    <span>Same group only</span>
+                  </label>
+
+                  <label class="toggle">
+                    <input id="flexMode" type="checkbox" />
+                    <span>Best‑fit mode</span>
+                  </label>
+                </div>
+
+                <button class="btn btn--primary btn--wide" id="getSwapsBtn" type="button">Get swaps</button>
+
+                <div class="error hidden" id="swapError" role="alert"></div>
+                <div class="help muted" id="unitHint"></div>
+              </div>
+
+              <div class="card card--glass">
+                <div class="cardHead">
+                  <div>
+                    <div class="h3">Original vs Swap</div>
+                    <div class="muted">Pick a swap to see the breakdown.</div>
+                  </div>
+                </div>
+
+                <div id="resultsBox" class="results">
+                  <div class="empty">
+                    <div class="empty__title">No swaps yet</div>
+                    <div class="empty__sub">Search a food, enter a portion, then click “Get swaps”.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Profile -->
+          <div id="panelProfile" class="panel hidden">
+            <div class="card card--glass">
+              <div class="cardHead">
+                <div>
+                  <div class="h3">Profile</div>
+                  <div class="muted">Saved on this device. Edit anytime.</div>
+                </div>
+                <button class="btn btn--primary" id="editProfileBtn" type="button">Edit profile</button>
+              </div>
+
+              <div id="profileSummary" class="profileSummary"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="muted">Open-source SWAP UI • <a href="https://monkvee.com" target="_blank" rel="noopener">Powered by MonkVee</a></div>
+      <div class="muted">© <span id="year"></span> SWAP</div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

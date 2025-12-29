@@ -15,7 +15,7 @@
  ********************/
 // IMPORTANT: paste your Apps Script Web App EXEC URL below (must end with /exec)
 // Example: https://script.google.com/macros/s/AKfycb.../exec
-const DEFAULT_API_BASE = "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE";
+const DEFAULT_API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
 
 const STORE = {
   apiBase: "swap_api_base_v1",

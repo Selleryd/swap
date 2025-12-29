@@ -1,136 +1,141 @@
-/*******************************
- * api.js (SWAP) — Apps Script Bridge Mode (NO CORS)
- * Backward compatible exports:
- *  - export const API_BASE
- *  - export const API = { ping, generatePlan, suggestSwaps, generateRecipe }
- *  - export async function postJSON(action, payload)
- *
- * ✅ Set BRIDGE_URL to your Apps Script /exec?bridge=1
- *******************************/
+// api.js (JSONP Bridge-less)
+// Works on GitHub Pages with Google Apps Script doGet() that supports ?callback=...
+// IMPORTANT: JSONP = GET-only. Your Apps Script routes must accept GET params.
 
-export const BRIDGE_URL =
-  "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec?bridge=1"; // <-- CHANGE THIS
+"use strict";
 
-// keep legacy name so existing code doesn't break
-export const API_BASE = BRIDGE_URL;
+// 1) PUT YOUR /exec URL HERE (must be a deployed Web App)
+let EXEC_URL = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
-const IFRAME_ID = "swapBridge";
-const REQ_TYPE = "SWAP_REQ";
-const RES_TYPE = "SWAP_RES";
-const READY_TYPE = "SWAP_BRIDGE_READY";
-
-// Apps Script iframes can report either of these origins
-function isAllowedOrigin(origin) {
-  if (typeof origin !== "string") return false;
-  // Apps Script HtmlService commonly uses n-xxxx-script.googleusercontent.com
-  return origin.startsWith("https://script.google.com") || origin.includes("googleusercontent.com");
+/** Optional: allow changing URL at runtime */
+export function setExecUrl(url) {
+  EXEC_URL = String(url || "").trim();
 }
 
-
-const pending = new Map(); // id -> {resolve,reject,timeoutId}
-let readyPromise = null;
-
-function ensureBridgeIframe() {
-  let iframe = document.getElementById(IFRAME_ID);
-  if (iframe) return iframe;
-
-  iframe = document.createElement("iframe");
-  iframe.id = IFRAME_ID;
-  iframe.src = BRIDGE_URL;
-  iframe.style.position = "fixed";
-  iframe.style.left = "-9999px";
-  iframe.style.top = "-9999px";
-  iframe.style.width = "1px";
-  iframe.style.height = "1px";
-  iframe.style.border = "0";
-  iframe.setAttribute("aria-hidden", "true");
-
-  // IMPORTANT: don't assume document.body exists yet
-  (document.body || document.documentElement).appendChild(iframe);
-
-  return iframe;
+/** Build querystring from a params object */
+function toQuery(params = {}) {
+  const sp = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v === undefined || v === null) return;
+    // Support arrays (repeat keys)
+    if (Array.isArray(v)) {
+      v.forEach((item) => sp.append(k, String(item)));
+    } else {
+      sp.set(k, String(v));
+    }
+  });
+  return sp.toString();
 }
 
-function waitForBridgeReady() {
-  if (readyPromise) return readyPromise;
+/**
+ * JSONP call to Apps Script
+ * @param {string} route - e.g. "health", "meta", "foods", "food", "swap"
+ * @param {object} params - route params
+ * @param {object} opts - { timeoutMs }
+ */
+export function jsonp(route, params = {}, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs ?? 15000);
 
-  readyPromise = new Promise((resolve, reject) => {
-    const t = setTimeout(() => {
-      window.removeEventListener("message", onMsg);
-      reject(new Error("Bridge not ready (timeout). Check BRIDGE_URL / deployment access."));
-    }, 12000);
-
-    function onMsg(e) {
-      if (!isAllowedOrigin(e.origin)) return;
-      const m = e.data || {};
-      if (m.type !== READY_TYPE) return;
-      clearTimeout(t);
-      window.removeEventListener("message", onMsg);
-      resolve(true);
+  return new Promise((resolve, reject) => {
+    if (!EXEC_URL || !EXEC_URL.includes("/exec")) {
+      reject(new Error("EXEC_URL is not set to a valid Apps Script /exec URL."));
+      return;
     }
 
-    window.addEventListener("message", onMsg);
-    ensureBridgeIframe();
+    const cbName = `__swap_jsonp_cb_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const cleanup = (scriptEl) => {
+      try { delete window[cbName]; } catch (_) { window[cbName] = undefined; }
+      if (scriptEl && scriptEl.parentNode) scriptEl.parentNode.removeChild(scriptEl);
+    };
+
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup(script);
+      reject(
+        new Error(
+          "JSONP timeout (no callback). Usually means: deployment not public, wrong EXEC_URL, or server threw an error before responding."
+        )
+      );
+    }, timeoutMs);
+
+    // Define the callback the server will call: callback(<object>)
+    window[cbName] = (data) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cleanup(script);
+
+      // Some backends may return stringified JSON inside JSONP
+      if (typeof data === "string") {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve({ ok: true, data }); }
+        return;
+      }
+      resolve(data);
+    };
+
+    // Build URL: /exec?route=...&...&callback=cbName&t=...
+    const qs = toQuery({
+      route: (route || "health").toLowerCase(),
+      ...params,
+      callback: cbName,
+      t: Date.now(), // bust caching
+    });
+
+    const url = `${EXEC_URL}${EXEC_URL.includes("?") ? "&" : "?"}${qs}`;
+
+    const script = document.createElement("script");
+    script.src = url;
+    script.async = true;
+
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cleanup(script);
+      reject(new Error("JSONP script load error. Check EXEC_URL / deployment access."));
+    };
+
+    document.head.appendChild(script);
   });
-
-  return readyPromise;
 }
 
-// One global listener for responses
-window.addEventListener("message", (e) => {
-  if (!isAllowedOrigin(e.origin)) return;
-  const m = e.data || {};
-  if (m.type !== RES_TYPE) return;
+/** Generic route caller (recommended) */
+export async function call(route, params = {}, opts = {}) {
+  const res = await jsonp(route, params, opts);
 
-  const id = m.id;
-  const entry = pending.get(id);
-  if (!entry) return;
-
-  clearTimeout(entry.timeoutId);
-  pending.delete(id);
-
-  if (m.ok) entry.resolve(m.data);
-  else entry.reject(new Error(m.error || "Bridge error"));
-});
-
-async function bridgeCall(action, payload) {
-  await waitForBridgeReady();
-  const iframe = ensureBridgeIframe();
-  if (!iframe.contentWindow) throw new Error("Bridge iframe not available.");
-
-  const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-  const p = new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error("Bridge request timed out."));
-    }, 30000);
-
-    pending.set(id, { resolve, reject, timeoutId });
-  });
-
-  iframe.contentWindow.postMessage({ type: REQ_TYPE, id, action, payload }, "*");
-  return p;
+  // Standardize: if server returns {ok:false,...} treat as error
+  if (res && typeof res === "object" && res.ok === false) {
+    const msg = res.error || "Server returned ok:false";
+    const err = new Error(msg);
+    err.response = res;
+    throw err;
+  }
+  return res;
 }
 
-export async function postJSON(action, payload) {
-  const data = await bridgeCall(action, payload);
-  if (!data || data.ok === false) throw new Error(data?.error || "Request failed");
-  return data;
-}
+/* Convenience helpers matching your backend routes */
+export const api = {
+  setExecUrl,
 
-// Legacy API object (so your app doesn't break)
-export const API = {
-  async ping() {
-    return postJSON("ping", {});
-  },
-  async generatePlan(profile, targets) {
-    return postJSON("plan_generate", { profile, targets });
-  },
-  async suggestSwaps(context) {
-    return postJSON("swaps_suggest", context);
-  },
-  async generateRecipe(recipeReq) {
-    return postJSON("recipe_generate", recipeReq);
-  },
+  health: (opts) => call("health", {}, opts),
+  meta: (opts) => call("meta", {}, opts),
+
+  foods: (q, { limit = 25, group } = {}, opts) =>
+    call("foods", { q, limit, group }, opts),
+
+  food: (id, opts) => call("food", { id }, opts),
+
+  swap: (id, { portion_g = 140, tol = 0.05, flex = 0, limit = 12, same_group = 1 } = {}, opts) =>
+    call("swap", { id, portion_g, tol, flex, limit, same_group }, opts),
+
+  refreshCache: (opts) => call("refreshcache", {}, opts),
+
+  // Generic if your UI calls unknown routes
+  call,
 };
+
+// Also expose a global for non-module code (safe/no conflicts)
+window.SWAP_API = api;

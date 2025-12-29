@@ -21,12 +21,11 @@ const READY_TYPE = "SWAP_BRIDGE_READY";
 
 // Apps Script iframes can report either of these origins
 function isAllowedOrigin(origin) {
-  return (
-    typeof origin === "string" &&
-    (origin.startsWith("https://script.google.com") ||
-      origin.startsWith("https://script.googleusercontent.com"))
-  );
+  if (typeof origin !== "string") return false;
+  // Apps Script HtmlService commonly uses n-xxxx-script.googleusercontent.com
+  return origin.startsWith("https://script.google.com") || origin.includes("googleusercontent.com");
 }
+
 
 const pending = new Map(); // id -> {resolve,reject,timeoutId}
 let readyPromise = null;

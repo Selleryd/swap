@@ -215,7 +215,6 @@ function wirePlanTab(){
   btnGen.addEventListener("click", () => generatePlan(false));
   btnRegen.addEventListener("click", () => generatePlan(true));
 
-  // if no plan, encourage generation
   if (!plan){
     setStatus("Generate a plan");
   }
@@ -235,8 +234,8 @@ async function generatePlan(force){
   }
 
   try{
-    setStatus("Generating plan…");
-    const res = await API.generatePlan(profile, profile.computed);
+    setStatus(force ? "Regenerating plan…" : "Generating plan…");
+    const res = await API.generatePlan(profile, profile.computed, { force: !!force });
     Storage.setPlan(res.plan);
     renderCalendar(res.plan, onClickItem);
     setStatus("Plan ready");
@@ -304,8 +303,10 @@ async function generateRecipesForWeek(plan){
       if (recipesMap[key]) continue;
 
       status.textContent = `Generating recipes… (${i+1}/${plan.days.length})`;
+
       const res = await API.generateRecipe({
         day,
+        planDay: day,
         profile: {
           dietary: profile?.dietary || "",
           allergens: profile?.allergens || "",

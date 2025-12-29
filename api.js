@@ -1,19 +1,16 @@
-// api.js (SWAP) — JSONP-only backend client for Google Apps Script (no bridge, no CORS headaches)
+// api.js (SWAP) — JSONP-only backend client for Google Apps Script
 // Paste this file as-is into /swap/api.js
 //
 // IMPORTANT:
 // 1) Put your Apps Script /exec URL into SWAP_EXEC_URL below.
 // 2) Your Code.gs must support JSONP via `?callback=someFn` and return `someFn(<json>);`.
-//    (Your doGet already shows it reads `p.callback` and calls `respond_(out, callback)` — perfect.)
-//
-// This module exports a NAMED export `API` (what your app.js expects) AND a default export.
 
 const SWAP_EXEC_URL =
   (globalThis.__SWAP_CONFIG__ && globalThis.__SWAP_CONFIG__.EXEC_URL) ||
   globalThis.localStorage?.getItem("SWAP_EXEC_URL") ||
-  "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
+  "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE";
 
-// ---------- small utils ----------
+// ---------- utils ----------
 function toISODate(d) {
   const dt = new Date(d);
   const y = dt.getFullYear();
@@ -22,7 +19,7 @@ function toISODate(d) {
   return `${y}-${m}-${day}`;
 }
 
-function startOfWeekISO(date = new Date(), weekStartsOn = 1) {
+function startOfWeekDate(date = new Date(), weekStartsOn = 1) {
   // weekStartsOn: 0=Sun, 1=Mon
   const d = new Date(date);
   const day = d.getDay();
@@ -43,8 +40,23 @@ function safeNum(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function () {
+    t += 0x6d2b79f5;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickOne(list, rand) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  return list[Math.floor(rand() * list.length)];
+}
+
 function normalizeFood(raw) {
-  // Works with a variety of shapes coming back from Sheets/Apps Script
   if (!raw || typeof raw !== "object") return null;
 
   const id =
@@ -75,7 +87,6 @@ function normalizeFood(raw) {
     raw["group"] ||
     "";
 
-  // Try common macro fields (per 100g) if present
   const kcal100 =
     safeNum(raw.kcal_100g, NaN) ??
     safeNum(raw.kcal_per_100g, NaN) ??
@@ -126,56 +137,86 @@ function makeMealItem(food, portion_g) {
     name: f.name,
     group: f.group,
     portion_g: g,
+
+    // common keys UIs use
     calories: kcal,
+    kcal: kcal,
+
     protein_g: protein,
     carbs_g: carbs,
     fat_g: fat,
-    // some UIs look for `kcal` instead of `calories`
-    kcal: kcal,
+
+    // extra aliases (some UIs expect these)
+    protein: protein,
+    carbs: carbs,
+    fat: fat,
   };
 }
 
 function sumDay(day) {
   const slots = ["breakfast", "snack_am", "lunch", "snack_pm", "dinner"];
   const totals = { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+
   for (const s of slots) {
     const items = (day?.meals?.[s] || day?.[s] || []).filter(Boolean);
     for (const it of items) {
       if (Number.isFinite(it?.kcal)) totals.kcal += it.kcal;
-      if (Number.isFinite(it?.calories)) totals.kcal += it.calories; // if kcal missing
+      else if (Number.isFinite(it?.calories)) totals.kcal += it.calories;
+
       if (Number.isFinite(it?.protein_g)) totals.protein_g += it.protein_g;
+      else if (Number.isFinite(it?.protein)) totals.protein_g += it.protein;
+
       if (Number.isFinite(it?.carbs_g)) totals.carbs_g += it.carbs_g;
+      else if (Number.isFinite(it?.carbs)) totals.carbs_g += it.carbs;
+
       if (Number.isFinite(it?.fat_g)) totals.fat_g += it.fat_g;
+      else if (Number.isFinite(it?.fat)) totals.fat_g += it.fat;
     }
   }
+
   totals.kcal = Math.round(totals.kcal);
   totals.protein_g = +totals.protein_g.toFixed(1);
   totals.carbs_g = +totals.carbs_g.toFixed(1);
   totals.fat_g = +totals.fat_g.toFixed(1);
+
+  // some UIs expect totals.calories
+  totals.calories = totals.kcal;
   return totals;
 }
 
-function mulberry32(seed) {
-  let t = seed >>> 0;
-  return function () {
-    t += 0x6d2b79f5;
-    let x = t;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
+function wrapPlan(plan) {
+  // This is the key fix: return the plan in EVERY common location & naming.
+  const p = plan || {};
+  return {
+    ok: true,
 
-function pickOne(list, rand) {
-  if (!Array.isArray(list) || list.length === 0) return null;
-  const i = Math.floor(rand() * list.length);
-  return list[i];
+    // top-level (some code uses this)
+    ...p,
+
+    // common wrappers
+    plan: p,
+    weekPlan: p,
+    data: p,
+    result: p,
+
+    // common start-date aliases (avoid "Invalid Date")
+    week_start: p.week_start || p.weekStart || p.startDate || p.week_start,
+    weekStart: p.weekStart || p.week_start || p.startDate || p.week_start,
+    startDate: p.startDate || p.weekStart || p.week_start || p.week_start,
+
+    // common days aliases
+    days: p.days || p.week || [],
+    week: p.week || p.days || [],
+
+    // common totals aliases
+    totals: p.totals || {},
+  };
 }
 
 // ---------- JSONP core ----------
 function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
   const execUrl = (url || "").trim();
-  if (!execUrl || execUrl.includes("https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec")) {
+  if (!execUrl || execUrl.includes("PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE")) {
     return Promise.reject(
       new Error(
         "SWAP_EXEC_URL is not set. Paste your Apps Script /exec URL into api.js (or set localStorage SWAP_EXEC_URL)."
@@ -199,7 +240,7 @@ function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
     let done = false;
     let timer = null;
 
-    function cleanup() {
+    function cleanup(script) {
       if (timer) clearTimeout(timer);
       try {
         delete globalThis[cbName];
@@ -210,7 +251,7 @@ function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
     globalThis[cbName] = (data) => {
       if (done) return;
       done = true;
-      cleanup();
+      cleanup(script);
       resolve(data);
     };
 
@@ -221,14 +262,14 @@ function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
     script.onerror = () => {
       if (done) return;
       done = true;
-      cleanup();
-      reject(new Error("JSONP load failed (script error). Check Apps Script deployment access + URL."));
+      cleanup(script);
+      reject(new Error("JSONP load failed. Check Apps Script deployment access + URL."));
     };
 
     timer = setTimeout(() => {
       if (done) return;
       done = true;
-      cleanup();
+      cleanup(script);
       reject(new Error("JSONP timeout. Check Apps Script deployment access + URL."));
     }, timeoutMs);
 
@@ -236,29 +277,21 @@ function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
   });
 }
 
-// ---------- low-level routes ----------
+// ---------- routes ----------
 async function callRoute(route, p = {}) {
   const out = await jsonp(SWAP_EXEC_URL, { route, ...p });
-  // Some backends wrap data; keep it flexible:
   if (out && typeof out === "object") return out;
   return { ok: false, error: "Invalid response from backend", raw: out };
 }
 
-async function routeFoods({ q = "", limit = 50, group = "" } = {}) {
+async function routeFoods({ q = "", limit = 200, group = "" } = {}) {
   const res = await callRoute("foods", { q, limit, group });
-  // Normalize common shapes:
-  const arr =
-    res?.foods ||
-    res?.items ||
-    res?.data ||
-    (Array.isArray(res) ? res : []) ||
-    [];
+  const arr = res?.foods || res?.items || res?.data || (Array.isArray(res) ? res : []);
   return { ...res, foods: Array.isArray(arr) ? arr : [] };
 }
 
-// ---------- high-level API used by app.js ----------
+// ---------- high-level API ----------
 export const API = {
-  // Optional helper: set URL without editing file again
   setExecUrl(url) {
     const u = String(url || "").trim();
     if (!u) return false;
@@ -270,7 +303,6 @@ export const API = {
     }
   },
 
-  // Basic backend checks
   health() {
     return callRoute("health");
   },
@@ -278,7 +310,6 @@ export const API = {
     return callRoute("meta");
   },
 
-  // Food DB
   foods({ q = "", limit = 50, group = "" } = {}) {
     return routeFoods({ q, limit, group });
   },
@@ -286,7 +317,6 @@ export const API = {
     return callRoute("food", { id });
   },
 
-  // Swaps
   swap({ id, portion_g = 100, tol = 0.05, flex = 0, limit = 12, same_group = 1 } = {}) {
     return callRoute("swap", { id, portion_g, tol, flex, limit, same_group });
   },
@@ -295,23 +325,28 @@ export const API = {
     return callRoute("refreshcache");
   },
 
-  // ----------------------------
-  // Meal Plan generation
-  // ----------------------------
-  // If your backend DOES NOT have a "plan" route, your UI still expects API.generatePlan().
-  // So we generate a usable plan on the client using your Foods DB.
-  //
-  // This fixes:
-  // - "API.generatePlan is not a function"
-  // - "Week of Invalid Date" (we always return real ISO dates)
-  // - empty meal slots (we always put items in)
+  // ---- PLAN GENERATION ----
+  // Tries backend route=plan FIRST (if you ever add it), otherwise generates client-side.
   async generatePlan(options = {}) {
-    const weekStartsOn = safeNum(options.weekStartsOn, 1); // Monday
-    const seedBase = options.seed != null ? safeNum(options.seed, Date.now()) : Date.now();
-    const rand = mulberry32(Math.floor(seedBase / 86400000)); // stable per-day-ish
+    // 1) Try backend route=plan if it exists (won't break if not)
+    try {
+      const backend = await callRoute("plan", options);
+      // If backend returns something plan-like, wrap it and return
+      const maybePlan =
+        backend?.plan || backend?.weekPlan || backend?.data || backend?.result || backend;
+      if (backend?.ok && maybePlan) {
+        return wrapPlan(maybePlan);
+      }
+    } catch {
+      // ignore and fall back
+    }
 
-    // Pull a decent pool from your DB. If groups don’t exist, it still works.
-    // We do multiple queries so something returns even if group filters aren’t supported.
+    // 2) Client-side fallback plan (always returns valid dates + real meals)
+    const weekStartsOn = safeNum(options.weekStartsOn, 1);
+    const seed = options.seed != null ? safeNum(options.seed, Date.now()) : Date.now();
+    const rand = mulberry32(Math.floor(seed));
+
+    // pull pools
     let proteins = [];
     let carbs = [];
     let fats = [];
@@ -320,11 +355,11 @@ export const API = {
 
     try {
       const [p1, c1, f1, v1, m1] = await Promise.all([
-        routeFoods({ q: "", limit: 120, group: "protein" }),
-        routeFoods({ q: "", limit: 120, group: "carb" }),
-        routeFoods({ q: "", limit: 120, group: "fat" }),
-        routeFoods({ q: "", limit: 120, group: "free" }),
-        routeFoods({ q: "", limit: 200, group: "" }),
+        routeFoods({ q: "", limit: 160, group: "protein" }),
+        routeFoods({ q: "", limit: 160, group: "carb" }),
+        routeFoods({ q: "", limit: 160, group: "fat" }),
+        routeFoods({ q: "", limit: 160, group: "free" }),
+        routeFoods({ q: "", limit: 300, group: "" }),
       ]);
 
       proteins = (p1.foods || []).map(normalizeFood).filter(Boolean);
@@ -333,10 +368,10 @@ export const API = {
       veggies = (v1.foods || []).map(normalizeFood).filter(Boolean);
       misc = (m1.foods || []).map(normalizeFood).filter(Boolean);
     } catch {
-      // ignore; we'll use fallbacks below
+      // ignore
     }
 
-    // Fallbacks so plan always renders even if DB is empty
+    // fallback foods so UI always renders
     const FALLBACK = {
       proteins: [
         { id: "p_chicken", name: "Chicken breast", group: "protein", kcal_100g: 165, protein_100g: 31, carbs_100g: 0, fat_100g: 3.6 },
@@ -360,80 +395,78 @@ export const API = {
       ],
     };
 
-    // If group lists are empty, borrow from misc or fallback
-    const P = proteins.length ? proteins : (misc.filter((x) => /protein/i.test(x.group)) || []).slice(0, 50);
-    const C = carbs.length ? carbs : (misc.filter((x) => /carb|grain|starch/i.test(x.group)) || []).slice(0, 50);
-    const F = fats.length ? fats : (misc.filter((x) => /fat|oil|nuts/i.test(x.group)) || []).slice(0, 50);
-    const V = veggies.length ? veggies : (misc.filter((x) => /free|veg|vegetable/i.test(x.group)) || []).slice(0, 80);
+    const proteinsPool = proteins.length ? proteins : FALLBACK.proteins;
+    const carbsPool = carbs.length ? carbs : FALLBACK.carbs;
+    const fatsPool = fats.length ? fats : FALLBACK.fats;
+    const vegPool = veggies.length ? veggies : FALLBACK.veggies;
 
-    const proteinsPool = (P && P.length ? P : FALLBACK.proteins);
-    const carbsPool = (C && C.length ? C : FALLBACK.carbs);
-    const fatsPool = (F && F.length ? F : FALLBACK.fats);
-    const vegPool = (V && V.length ? V : FALLBACK.veggies);
+    // if group filtering doesn't work, also borrow from misc
+    const miscPool = misc.length ? misc : [];
+    function ensurePool(pool, fallback) {
+      return pool && pool.length ? pool : (miscPool.length ? miscPool : fallback);
+    }
 
-    const weekStart = startOfWeekISO(new Date(), weekStartsOn);
+    const P = ensurePool(proteinsPool, FALLBACK.proteins);
+    const C = ensurePool(carbsPool, FALLBACK.carbs);
+    const F = ensurePool(fatsPool, FALLBACK.fats);
+    const V = ensurePool(vegPool, FALLBACK.veggies);
+
+    const weekStartDate = startOfWeekDate(new Date(), weekStartsOn);
+    const weekStartISO = toISODate(weekStartDate);
+
     const days = [];
-
     for (let i = 0; i < 7; i++) {
-      const date = addDays(weekStart, i);
-      const iso = toISODate(date);
+      const dateObj = addDays(weekStartDate, i);
+      const iso = toISODate(dateObj);
 
-      // Pick foods
-      const bfProtein = pickOne(proteinsPool, rand);
-      const bfCarb = pickOne(carbsPool, rand);
-      const lnProtein = pickOne(proteinsPool, rand);
-      const lnCarb = pickOne(carbsPool, rand);
-      const dnProtein = pickOne(proteinsPool, rand);
-      const dnCarb = pickOne(carbsPool, rand);
-      const veg1 = pickOne(vegPool, rand);
-      const veg2 = pickOne(vegPool, rand);
-      const snackP = pickOne(proteinsPool, rand);
-      const snackF = pickOne(fatsPool, rand);
+      const bfProtein = pickOne(P, rand);
+      const bfCarb = pickOne(C, rand);
+      const lnProtein = pickOne(P, rand);
+      const lnCarb = pickOne(C, rand);
+      const dnProtein = pickOne(P, rand);
+      const dnCarb = pickOne(C, rand);
 
-      // Portions (grams) — simple + consistent so UI always shows “real food”
+      const veg1 = pickOne(V, rand);
+      const veg2 = pickOne(V, rand);
+      const snackP = pickOne(P, rand);
+      const snackF = pickOne(F, rand);
+
       const breakfast = [
-        makeMealItem(bfProtein, 170), // e.g. greek yogurt portion-ish
-        makeMealItem(bfCarb, 60),     // oats/rice etc (rough)
+        makeMealItem(bfProtein, 170),
+        makeMealItem(bfCarb, 60),
       ];
-
-      const snack_am = [
-        makeMealItem(snackP, 150),
-      ];
-
+      const snack_am = [makeMealItem(snackP, 150)];
       const lunch = [
         makeMealItem(lnProtein, 170),
         makeMealItem(lnCarb, 180),
         makeMealItem(veg1, 120),
       ];
-
       const snack_pm = [
         makeMealItem(snackF, 30),
-        makeMealItem(pickOne(vegPool, rand), 120),
+        makeMealItem(pickOne(V, rand), 120),
       ];
-
       const dinner = [
         makeMealItem(dnProtein, 200),
         makeMealItem(dnCarb, 200),
         makeMealItem(veg2, 150),
       ];
 
-      const dayObj = {
+      const day = {
         date: iso,
 
-        // some renderers look for these directly:
+        // direct keys
         breakfast,
         snack_am,
         lunch,
         snack_pm,
         dinner,
 
-        // other renderers look inside `meals`:
+        // nested keys
         meals: { breakfast, snack_am, lunch, snack_pm, dinner },
       };
 
-      dayObj.totals = sumDay(dayObj);
-
-      days.push(dayObj);
+      day.totals = sumDay(day);
+      days.push(day);
     }
 
     const totals = days.reduce(
@@ -451,25 +484,33 @@ export const API = {
     totals.protein_g = +totals.protein_g.toFixed(1);
     totals.carbs_g = +totals.carbs_g.toFixed(1);
     totals.fat_g = +totals.fat_g.toFixed(1);
+    totals.calories = totals.kcal;
 
-    // Return multiple aliases so your UI can’t “miss” it
-    const weekStartISO = toISODate(weekStart);
-    return {
-      ok: true,
+    const plan = {
       week_start: weekStartISO,
       weekStart: weekStartISO,
       startDate: weekStartISO,
 
       days,
-      week: days, // alias
+      week: days,
 
       totals,
     };
+
+    return wrapPlan(plan);
   },
 
-  // Many UIs call this
   regeneratePlan(options = {}) {
+    // force fresh output
     return this.generatePlan({ ...options, seed: Date.now() });
+  },
+
+  // extra aliases (some app.js versions call these)
+  generateMealPlan(options = {}) {
+    return this.generatePlan(options);
+  },
+  regenerateMealPlan(options = {}) {
+    return this.regeneratePlan(options);
   },
 };
 

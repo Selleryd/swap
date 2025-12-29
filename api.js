@@ -1,12 +1,12 @@
 // Your Apps Script Web App URL (keep as-is unless you redeploy)
 export const API_BASE = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
-async function postJSON(action, payload){
+async function postJSON(action, payload) {
   const res = await fetch(API_BASE, {
     method: "POST",
-    headers: { "Content-Type":"application/json" },
-    body: JSON.stringify({ action, payload })
+    body: JSON.stringify({ action, payload }),
   });
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.ok === false) {
     const msg = data?.error || `Request failed (${res.status})`;
@@ -14,6 +14,7 @@ async function postJSON(action, payload){
   }
   return data;
 }
+
 
 export const API = {
   async ping(){

@@ -8,7 +8,7 @@
 const SWAP_EXEC_URL =
   (globalThis.__SWAP_CONFIG__ && globalThis.__SWAP_CONFIG__.EXEC_URL) ||
   globalThis.localStorage?.getItem("SWAP_EXEC_URL") ||
-  "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE";
+  "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
 // ---------- utils ----------
 function toISODate(d) {
@@ -216,7 +216,7 @@ function wrapPlan(plan) {
 // ---------- JSONP core ----------
 function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
   const execUrl = (url || "").trim();
-  if (!execUrl || execUrl.includes("PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE")) {
+  if (!execUrl || execUrl.includes("https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec")) {
     return Promise.reject(
       new Error(
         "SWAP_EXEC_URL is not set. Paste your Apps Script /exec URL into api.js (or set localStorage SWAP_EXEC_URL)."

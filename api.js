@@ -8,7 +8,7 @@
 "use strict";
 
 /** 1) SET THIS */
-const GAS_EXEC_URL = https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec
+const GAS_EXEC_URL = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec"
   // prefer an explicit global if you set one elsewhere
   (typeof window !== "undefined" && (window.SWAP_GAS_EXEC_URL || window.GAS_EXEC_URL)) ||
   // or persisted setting

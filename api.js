@@ -1,226 +1,27 @@
-// api.js (SWAP) — JSONP-only backend client for Google Apps Script
-// Paste this file as-is into /swap/api.js
+// api.js (SWAP) — JSONP client for Google Apps Script (NO iframe bridge)
+// Paste as /swap/api.js
 //
-// IMPORTANT:
-// 1) Put your Apps Script /exec URL into SWAP_EXEC_URL below.
-// 2) Your Code.gs must support JSONP via `?callback=someFn` and return `someFn(<json>);`.
+// REQUIRED:
+// - Put your Apps Script Web App /exec URL into SWAP_EXEC_URL below.
+// - Your Apps Script must support JSONP: respond as `${callback}(<json>);`
+// - Your Apps Script must expose a "plan" route (or one of the fallbacks listed below)
+//   that returns a real AI-generated week plan using OpenAI + your DB.
+//
+// This file exports:
+//   export const API
+//   export default API
 
 const SWAP_EXEC_URL =
   (globalThis.__SWAP_CONFIG__ && globalThis.__SWAP_CONFIG__.EXEC_URL) ||
   globalThis.localStorage?.getItem("SWAP_EXEC_URL") ||
   "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
-// ---------- utils ----------
-function toISODate(d) {
-  const dt = new Date(d);
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const day = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function startOfWeekDate(date = new Date(), weekStartsOn = 1) {
-  // weekStartsOn: 0=Sun, 1=Mon
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = (day - weekStartsOn + 7) % 7;
-  d.setDate(d.getDate() - diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function addDays(date, n) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + n);
-  return d;
-}
-
-function safeNum(x, fallback = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function mulberry32(seed) {
-  let t = seed >>> 0;
-  return function () {
-    t += 0x6d2b79f5;
-    let x = t;
-    x = Math.imul(x ^ (x >>> 15), x | 1);
-    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function pickOne(list, rand) {
-  if (!Array.isArray(list) || list.length === 0) return null;
-  return list[Math.floor(rand() * list.length)];
-}
-
-function normalizeFood(raw) {
-  if (!raw || typeof raw !== "object") return null;
-
-  const id =
-    raw.id ||
-    raw.food_id ||
-    raw.foodId ||
-    raw.FoodID ||
-    raw["Food ID"] ||
-    raw["food_id"] ||
-    raw["id"] ||
-    null;
-
-  const name =
-    raw.name ||
-    raw.food_name ||
-    raw.foodName ||
-    raw.FoodName ||
-    raw["Food Name"] ||
-    raw["name"] ||
-    "Food";
-
-  const group =
-    raw.group ||
-    raw.food_group ||
-    raw.foodGroup ||
-    raw.Group ||
-    raw["Food Group"] ||
-    raw["group"] ||
-    "";
-
-  const kcal100 =
-    safeNum(raw.kcal_100g, NaN) ??
-    safeNum(raw.kcal_per_100g, NaN) ??
-    safeNum(raw.calories_100g, NaN) ??
-    safeNum(raw.Calories_100g, NaN);
-
-  const protein100 =
-    safeNum(raw.protein_100g, NaN) ??
-    safeNum(raw.protein_g_100g, NaN) ??
-    safeNum(raw.Protein_100g, NaN);
-
-  const carbs100 =
-    safeNum(raw.carbs_100g, NaN) ??
-    safeNum(raw.carbohydrates_100g, NaN) ??
-    safeNum(raw.carbs_g_100g, NaN) ??
-    safeNum(raw.Carbs_100g, NaN);
-
-  const fat100 =
-    safeNum(raw.fat_100g, NaN) ??
-    safeNum(raw.fats_100g, NaN) ??
-    safeNum(raw.fat_g_100g, NaN) ??
-    safeNum(raw.Fat_100g, NaN);
-
-  return {
-    id,
-    name,
-    group,
-    kcal_100g: Number.isFinite(kcal100) ? kcal100 : null,
-    protein_100g: Number.isFinite(protein100) ? protein100 : null,
-    carbs_100g: Number.isFinite(carbs100) ? carbs100 : null,
-    fat_100g: Number.isFinite(fat100) ? fat100 : null,
-    _raw: raw,
-  };
-}
-
-function makeMealItem(food, portion_g) {
-  const g = Math.max(0, Math.round(safeNum(portion_g, 0)));
-  const f = normalizeFood(food) || { id: null, name: "Food", group: "", kcal_100g: null };
-
-  const mult = g / 100;
-  const kcal = f.kcal_100g != null ? Math.round(f.kcal_100g * mult) : null;
-  const protein = f.protein_100g != null ? +(f.protein_100g * mult).toFixed(1) : null;
-  const carbs = f.carbs_100g != null ? +(f.carbs_100g * mult).toFixed(1) : null;
-  const fat = f.fat_100g != null ? +(f.fat_100g * mult).toFixed(1) : null;
-
-  return {
-    id: f.id,
-    name: f.name,
-    group: f.group,
-    portion_g: g,
-
-    // common keys UIs use
-    calories: kcal,
-    kcal: kcal,
-
-    protein_g: protein,
-    carbs_g: carbs,
-    fat_g: fat,
-
-    // extra aliases (some UIs expect these)
-    protein: protein,
-    carbs: carbs,
-    fat: fat,
-  };
-}
-
-function sumDay(day) {
-  const slots = ["breakfast", "snack_am", "lunch", "snack_pm", "dinner"];
-  const totals = { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
-
-  for (const s of slots) {
-    const items = (day?.meals?.[s] || day?.[s] || []).filter(Boolean);
-    for (const it of items) {
-      if (Number.isFinite(it?.kcal)) totals.kcal += it.kcal;
-      else if (Number.isFinite(it?.calories)) totals.kcal += it.calories;
-
-      if (Number.isFinite(it?.protein_g)) totals.protein_g += it.protein_g;
-      else if (Number.isFinite(it?.protein)) totals.protein_g += it.protein;
-
-      if (Number.isFinite(it?.carbs_g)) totals.carbs_g += it.carbs_g;
-      else if (Number.isFinite(it?.carbs)) totals.carbs_g += it.carbs;
-
-      if (Number.isFinite(it?.fat_g)) totals.fat_g += it.fat_g;
-      else if (Number.isFinite(it?.fat)) totals.fat_g += it.fat;
-    }
-  }
-
-  totals.kcal = Math.round(totals.kcal);
-  totals.protein_g = +totals.protein_g.toFixed(1);
-  totals.carbs_g = +totals.carbs_g.toFixed(1);
-  totals.fat_g = +totals.fat_g.toFixed(1);
-
-  // some UIs expect totals.calories
-  totals.calories = totals.kcal;
-  return totals;
-}
-
-function wrapPlan(plan) {
-  // This is the key fix: return the plan in EVERY common location & naming.
-  const p = plan || {};
-  return {
-    ok: true,
-
-    // top-level (some code uses this)
-    ...p,
-
-    // common wrappers
-    plan: p,
-    weekPlan: p,
-    data: p,
-    result: p,
-
-    // common start-date aliases (avoid "Invalid Date")
-    week_start: p.week_start || p.weekStart || p.startDate || p.week_start,
-    weekStart: p.weekStart || p.week_start || p.startDate || p.week_start,
-    startDate: p.startDate || p.weekStart || p.week_start || p.week_start,
-
-    // common days aliases
-    days: p.days || p.week || [],
-    week: p.week || p.days || [],
-
-    // common totals aliases
-    totals: p.totals || {},
-  };
-}
-
 // ---------- JSONP core ----------
-function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
-  const execUrl = (url || "").trim();
-  if (!execUrl || execUrl.includes("https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec")) {
+function jsonp(params = {}, { timeoutMs = 25000 } = {}) {
+  const execUrl = String(SWAP_EXEC_URL || "").trim();
+  if (!execUrl || execUrl.includes("PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE")) {
     return Promise.reject(
-      new Error(
-        "SWAP_EXEC_URL is not set. Paste your Apps Script /exec URL into api.js (or set localStorage SWAP_EXEC_URL)."
-      )
+      new Error("SWAP_EXEC_URL not set. Paste your Apps Script /exec URL into api.js.")
     );
   }
 
@@ -270,27 +71,414 @@ function jsonp(url, params = {}, { timeoutMs = 15000 } = {}) {
       if (done) return;
       done = true;
       cleanup(script);
-      reject(new Error("JSONP timeout. Check Apps Script deployment access + URL."));
+      reject(new Error("JSONP timeout. Check Apps Script deployment + callback support."));
     }, timeoutMs);
 
     document.head.appendChild(script);
   });
 }
 
-// ---------- routes ----------
 async function callRoute(route, p = {}) {
-  const out = await jsonp(SWAP_EXEC_URL, { route, ...p });
+  const out = await jsonp({ route, ...p });
   if (out && typeof out === "object") return out;
   return { ok: false, error: "Invalid response from backend", raw: out };
 }
 
-async function routeFoods({ q = "", limit = 200, group = "" } = {}) {
-  const res = await callRoute("foods", { q, limit, group });
+// ---------- date helpers ----------
+function toISODate(d) {
+  const dt = new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function startOfWeekDate(date = new Date(), weekStartsOn = 0) {
+  // 0=Sunday (matches your screenshot week starting Sunday 12/28/2025)
+  const d = new Date(date);
+  const dow = d.getDay();
+  const diff = (dow - weekStartsOn + 7) % 7;
+  d.setDate(d.getDate() - diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+function safeNum(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// ---------- normalization (make app.js happy no matter what backend returns) ----------
+const SLOT_KEYS = ["breakfast", "snack_am", "lunch", "snack_pm", "dinner"];
+const SLOT_UPPER = ["BREAKFAST", "SNACK_AM", "LUNCH", "SNACK_PM", "DINNER"];
+const SLOT_LABEL = {
+  breakfast: "Breakfast",
+  snack_am: "Snack (AM)",
+  lunch: "Lunch",
+  snack_pm: "Snack (PM)",
+  dinner: "Dinner",
+};
+
+function normalizeItem(it) {
+  if (!it || typeof it !== "object") return null;
+
+  const id =
+    it.id ??
+    it.food_id ??
+    it.foodId ??
+    it.FoodID ??
+    it["Food ID"] ??
+    it.usda_id ??
+    it.usdaId ??
+    null;
+
+  const name =
+    it.name ??
+    it.food_name ??
+    it.foodName ??
+    it.FoodName ??
+    it["Food Name"] ??
+    it.label ??
+    "Food";
+
+  const portion_g =
+    safeNum(it.portion_g, NaN) ??
+    safeNum(it.grams, NaN) ??
+    safeNum(it.g, NaN) ??
+    safeNum(it.amount_g, NaN);
+
+  const calories =
+    safeNum(it.calories, NaN) ??
+    safeNum(it.kcal, NaN) ??
+    safeNum(it.energy_kcal, NaN);
+
+  const protein_g =
+    safeNum(it.protein_g, NaN) ??
+    safeNum(it.protein, NaN) ??
+    safeNum(it.proteinGrams, NaN);
+
+  const carbs_g =
+    safeNum(it.carbs_g, NaN) ??
+    safeNum(it.carbs, NaN) ??
+    safeNum(it.carbohydrates_g, NaN);
+
+  const fat_g =
+    safeNum(it.fat_g, NaN) ??
+    safeNum(it.fat, NaN) ??
+    safeNum(it.fatGrams, NaN);
+
+  // Keep original fields and add aliases your UI might check
+  const out = {
+    ...it,
+    id,
+    food_id: id,
+    foodId: id,
+
+    name,
+    label: name,
+
+    portion_g: Number.isFinite(portion_g) ? Math.round(portion_g) : null,
+    grams: Number.isFinite(portion_g) ? Math.round(portion_g) : null,
+
+    calories: Number.isFinite(calories) ? Math.round(calories) : null,
+    kcal: Number.isFinite(calories) ? Math.round(calories) : null,
+
+    protein_g: Number.isFinite(protein_g) ? +protein_g.toFixed(1) : null,
+    carbs_g: Number.isFinite(carbs_g) ? +carbs_g.toFixed(1) : null,
+    fat_g: Number.isFinite(fat_g) ? +fat_g.toFixed(1) : null,
+
+    protein: Number.isFinite(protein_g) ? +protein_g.toFixed(1) : null,
+    carbs: Number.isFinite(carbs_g) ? +carbs_g.toFixed(1) : null,
+    fat: Number.isFinite(fat_g) ? +fat_g.toFixed(1) : null,
+  };
+
+  return out;
+}
+
+function normalizeSlot(slotVal) {
+  // Accept:
+  // - array of items
+  // - object with items/foods/list
+  // - null
+  if (!slotVal) return { items: [], foods: [], list: [] };
+
+  if (Array.isArray(slotVal)) {
+    const items = slotVal.map(normalizeItem).filter(Boolean);
+    return { items, foods: items, list: items };
+  }
+
+  if (typeof slotVal === "object") {
+    const raw =
+      slotVal.items ??
+      slotVal.foods ??
+      slotVal.list ??
+      slotVal.mealItems ??
+      slotVal.entries ??
+      [];
+    const arr = Array.isArray(raw) ? raw : [];
+    const items = arr.map(normalizeItem).filter(Boolean);
+
+    // preserve metadata like title/type if present
+    return {
+      ...slotVal,
+      items,
+      foods: slotVal.foods ? items : items,
+      list: slotVal.list ? items : items,
+    };
+  }
+
+  return { items: [], foods: [], list: [] };
+}
+
+function normalizeDay(day, idx, weekStartISO) {
+  const base = (day && typeof day === "object") ? { ...day } : {};
+
+  // date
+  let date =
+    base.date ??
+    base.day ??
+    base.iso ??
+    base.dayISO ??
+    base["date"] ??
+    null;
+
+  if (!date || isNaN(Date.parse(date))) {
+    // derive from week_start
+    const w = new Date(weekStartISO);
+    date = toISODate(addDays(w, idx));
+  } else {
+    date = toISODate(new Date(date));
+  }
+
+  // collect slots from many possible schemas
+  const mealsObj = base.meals && typeof base.meals === "object" ? base.meals : {};
+
+  const slots = {};
+  for (let i = 0; i < SLOT_KEYS.length; i++) {
+    const k = SLOT_KEYS[i];
+    const up = SLOT_UPPER[i];
+
+    const candidate =
+      base[k] ??
+      base[up] ??
+      mealsObj[k] ??
+      mealsObj[up] ??
+      mealsObj[SLOT_LABEL[k]] ??
+      null;
+
+    slots[k] = normalizeSlot(candidate);
+  }
+
+  // also accept schema where meals is an array [{slot:'breakfast', items:[...]}]
+  if (Array.isArray(base.meals)) {
+    for (const m of base.meals) {
+      const slotKey =
+        (m && (m.slot || m.key || m.type || m.name || ""))?.toString()?.toLowerCase() || "";
+      const mapped =
+        slotKey.includes("break") ? "breakfast" :
+        slotKey.includes("am") ? "snack_am" :
+        slotKey.includes("lunch") ? "lunch" :
+        slotKey.includes("pm") ? "snack_pm" :
+        slotKey.includes("dinner") ? "dinner" : "";
+
+      if (mapped) slots[mapped] = normalizeSlot(m.items ?? m.foods ?? m.list ?? m);
+    }
+  }
+
+  // build compatibility views
+  const meals = {
+    breakfast: slots.breakfast,
+    snack_am: slots.snack_am,
+    lunch: slots.lunch,
+    snack_pm: slots.snack_pm,
+    dinner: slots.dinner,
+  };
+
+  const mealsArray = SLOT_KEYS.map((k) => ({
+    slot: k,
+    key: k,
+    name: SLOT_LABEL[k],
+    title: SLOT_LABEL[k],
+    items: meals[k].items,
+    foods: meals[k].items,
+    list: meals[k].items,
+  }));
+
+  // Top-level arrays (some UIs use day.breakfast as an array)
+  const out = {
+    ...base,
+    date,
+
+    // nested
+    meals,
+    mealsArray,
+    slots: meals,           // alias
+    schedule: meals,        // alias
+
+    // direct arrays (compat)
+    breakfast: meals.breakfast.items,
+    snack_am: meals.snack_am.items,
+    lunch: meals.lunch.items,
+    snack_pm: meals.snack_pm.items,
+    dinner: meals.dinner.items,
+
+    // direct objects (compat)
+    BREAKFAST: meals.breakfast,
+    SNACK_AM: meals.snack_am,
+    LUNCH: meals.lunch,
+    SNACK_PM: meals.snack_pm,
+    DINNER: meals.dinner,
+  };
+
+  return out;
+}
+
+function normalizePlan(planLike) {
+  const p = (planLike && typeof planLike === "object") ? { ...planLike } : {};
+
+  // find week_start
+  let week_start =
+    p.week_start ??
+    p.weekStart ??
+    p.startDate ??
+    p.weekStartISO ??
+    p.week_of ??
+    p.weekOf ??
+    null;
+
+  if (!week_start || isNaN(Date.parse(week_start))) {
+    // default: week starts Sunday to match your UI screenshot
+    week_start = toISODate(startOfWeekDate(new Date(), 0));
+  } else {
+    week_start = toISODate(new Date(week_start));
+  }
+
+  // find days array
+  const rawDays =
+    p.days ??
+    p.week ??
+    p.plan_days ??
+    p.weekDays ??
+    p.calendar ??
+    [];
+
+  const daysArr = Array.isArray(rawDays) ? rawDays : [];
+  const normalizedDays =
+    daysArr.length
+      ? daysArr.map((d, i) => normalizeDay(d, i, week_start))
+      : Array.from({ length: 7 }, (_, i) => normalizeDay({}, i, week_start));
+
+  // totals (optional)
+  const totals = p.totals ?? p.macros ?? p.summary ?? {};
+
+  return {
+    ...p,
+
+    week_start,
+    weekStart: week_start,
+    startDate: week_start,
+    week_of: week_start,
+    weekOf: week_start,
+
+    days: normalizedDays,
+    week: normalizedDays,
+
+    totals,
+  };
+}
+
+function wrapPlan(plan) {
+  // Return plan in every common wrapper so app.js can't miss it
+  const p = normalizePlan(plan);
+
+  return {
+    ok: true,
+
+    // common wrappers
+    plan: p,
+    weekPlan: p,
+    data: p,
+    result: p,
+
+    // top-level aliases
+    ...p,
+
+    // convenience
+    week_start: p.week_start,
+    days: p.days,
+    week: p.week,
+    totals: p.totals,
+  };
+}
+
+// ---------- plan route discovery ----------
+async function fetchPlanFromBackend(options = {}) {
+  // We try multiple routes because I don't know what you named it in Code.gs.
+  // Your Code.gs needs ONE of these to exist and return a plan-like object.
+  const ROUTES = [
+    "plan",
+    "mealplan",
+    "weekplan",
+    "generatePlan",
+    "generate_plan",
+    "ai_plan",
+    "aiMealPlan",
+  ];
+
+  // Always cache-bust so regenerate actually regenerates
+  const baseParams = {
+    ...options,
+    t: Date.now(),
+  };
+
+  // If user didn't pass week_start, set it (Sunday-start)
+  if (!baseParams.week_start && !baseParams.weekStart && !baseParams.startDate) {
+    baseParams.week_start = toISODate(startOfWeekDate(new Date(), 0));
+  }
+
+  let lastErr = null;
+
+  for (const r of ROUTES) {
+    try {
+      const res = await callRoute(r, baseParams);
+
+      // A bunch of backends use {ok:true, plan:{...}} OR just return plan object.
+      const maybePlan =
+        res?.plan ??
+        res?.weekPlan ??
+        res?.data ??
+        res?.result ??
+        res;
+
+      const ok =
+        res?.ok === true ||
+        (maybePlan && typeof maybePlan === "object" && (maybePlan.days || maybePlan.week || maybePlan.week_start));
+
+      if (ok && maybePlan && typeof maybePlan === "object") {
+        return wrapPlan(maybePlan);
+      }
+
+      lastErr = new Error(res?.error || `Route ${r} returned no plan`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  // If we got here: backend doesn't have a plan route (or JSONP callback not implemented).
+  throw lastErr || new Error("No plan route found on backend.");
+}
+
+// ---------- other routes ----------
+async function routeFoods({ q = "", limit = 50, group = "" } = {}) {
+  const res = await callRoute("foods", { q, limit, group, t: Date.now() });
   const arr = res?.foods || res?.items || res?.data || (Array.isArray(res) ? res : []);
   return { ...res, foods: Array.isArray(arr) ? arr : [] };
 }
 
-// ---------- high-level API ----------
+// ---------- exported API ----------
 export const API = {
   setExecUrl(url) {
     const u = String(url || "").trim();
@@ -303,206 +491,35 @@ export const API = {
     }
   },
 
+  // diagnostics
   health() {
-    return callRoute("health");
+    return callRoute("health", { t: Date.now() });
   },
   meta() {
-    return callRoute("meta");
+    return callRoute("meta", { t: Date.now() });
   },
 
+  // foods + swaps (DB-powered)
   foods({ q = "", limit = 50, group = "" } = {}) {
     return routeFoods({ q, limit, group });
   },
   food({ id } = {}) {
-    return callRoute("food", { id });
+    return callRoute("food", { id, t: Date.now() });
   },
-
   swap({ id, portion_g = 100, tol = 0.05, flex = 0, limit = 12, same_group = 1 } = {}) {
-    return callRoute("swap", { id, portion_g, tol, flex, limit, same_group });
+    return callRoute("swap", { id, portion_g, tol, flex, limit, same_group, t: Date.now() });
   },
 
-  refreshCache() {
-    return callRoute("refreshcache");
-  },
-
-  // ---- PLAN GENERATION ----
-  // Tries backend route=plan FIRST (if you ever add it), otherwise generates client-side.
+  // REAL AI WEEK PLAN (Apps Script must do OpenAI + DB mapping)
   async generatePlan(options = {}) {
-    // 1) Try backend route=plan if it exists (won't break if not)
-    try {
-      const backend = await callRoute("plan", options);
-      // If backend returns something plan-like, wrap it and return
-      const maybePlan =
-        backend?.plan || backend?.weekPlan || backend?.data || backend?.result || backend;
-      if (backend?.ok && maybePlan) {
-        return wrapPlan(maybePlan);
-      }
-    } catch {
-      // ignore and fall back
-    }
-
-    // 2) Client-side fallback plan (always returns valid dates + real meals)
-    const weekStartsOn = safeNum(options.weekStartsOn, 1);
-    const seed = options.seed != null ? safeNum(options.seed, Date.now()) : Date.now();
-    const rand = mulberry32(Math.floor(seed));
-
-    // pull pools
-    let proteins = [];
-    let carbs = [];
-    let fats = [];
-    let veggies = [];
-    let misc = [];
-
-    try {
-      const [p1, c1, f1, v1, m1] = await Promise.all([
-        routeFoods({ q: "", limit: 160, group: "protein" }),
-        routeFoods({ q: "", limit: 160, group: "carb" }),
-        routeFoods({ q: "", limit: 160, group: "fat" }),
-        routeFoods({ q: "", limit: 160, group: "free" }),
-        routeFoods({ q: "", limit: 300, group: "" }),
-      ]);
-
-      proteins = (p1.foods || []).map(normalizeFood).filter(Boolean);
-      carbs = (c1.foods || []).map(normalizeFood).filter(Boolean);
-      fats = (f1.foods || []).map(normalizeFood).filter(Boolean);
-      veggies = (v1.foods || []).map(normalizeFood).filter(Boolean);
-      misc = (m1.foods || []).map(normalizeFood).filter(Boolean);
-    } catch {
-      // ignore
-    }
-
-    // fallback foods so UI always renders
-    const FALLBACK = {
-      proteins: [
-        { id: "p_chicken", name: "Chicken breast", group: "protein", kcal_100g: 165, protein_100g: 31, carbs_100g: 0, fat_100g: 3.6 },
-        { id: "p_eggs", name: "Eggs", group: "protein", kcal_100g: 143, protein_100g: 13, carbs_100g: 1.1, fat_100g: 9.5 },
-        { id: "p_greek", name: "Greek yogurt (plain)", group: "protein", kcal_100g: 59, protein_100g: 10, carbs_100g: 3.6, fat_100g: 0.4 },
-      ],
-      carbs: [
-        { id: "c_rice", name: "Cooked rice", group: "carb", kcal_100g: 130, protein_100g: 2.4, carbs_100g: 28.2, fat_100g: 0.3 },
-        { id: "c_oats", name: "Oats (dry)", group: "carb", kcal_100g: 389, protein_100g: 16.9, carbs_100g: 66.3, fat_100g: 6.9 },
-        { id: "c_potato", name: "Potato", group: "carb", kcal_100g: 77, protein_100g: 2.0, carbs_100g: 17.0, fat_100g: 0.1 },
-      ],
-      fats: [
-        { id: "f_olive", name: "Olive oil", group: "fat", kcal_100g: 884, protein_100g: 0, carbs_100g: 0, fat_100g: 100 },
-        { id: "f_avocado", name: "Avocado", group: "fat", kcal_100g: 160, protein_100g: 2.0, carbs_100g: 8.5, fat_100g: 14.7 },
-        { id: "f_pb", name: "Peanut butter", group: "fat", kcal_100g: 588, protein_100g: 25, carbs_100g: 20, fat_100g: 50 },
-      ],
-      veggies: [
-        { id: "v_salad", name: "Mixed greens", group: "free", kcal_100g: 15, protein_100g: 1.4, carbs_100g: 2.9, fat_100g: 0.2 },
-        { id: "v_broccoli", name: "Broccoli", group: "free", kcal_100g: 34, protein_100g: 2.8, carbs_100g: 6.6, fat_100g: 0.4 },
-        { id: "v_cucumber", name: "Cucumber", group: "free", kcal_100g: 15, protein_100g: 0.7, carbs_100g: 3.6, fat_100g: 0.1 },
-      ],
-    };
-
-    const proteinsPool = proteins.length ? proteins : FALLBACK.proteins;
-    const carbsPool = carbs.length ? carbs : FALLBACK.carbs;
-    const fatsPool = fats.length ? fats : FALLBACK.fats;
-    const vegPool = veggies.length ? veggies : FALLBACK.veggies;
-
-    // if group filtering doesn't work, also borrow from misc
-    const miscPool = misc.length ? misc : [];
-    function ensurePool(pool, fallback) {
-      return pool && pool.length ? pool : (miscPool.length ? miscPool : fallback);
-    }
-
-    const P = ensurePool(proteinsPool, FALLBACK.proteins);
-    const C = ensurePool(carbsPool, FALLBACK.carbs);
-    const F = ensurePool(fatsPool, FALLBACK.fats);
-    const V = ensurePool(vegPool, FALLBACK.veggies);
-
-    const weekStartDate = startOfWeekDate(new Date(), weekStartsOn);
-    const weekStartISO = toISODate(weekStartDate);
-
-    const days = [];
-    for (let i = 0; i < 7; i++) {
-      const dateObj = addDays(weekStartDate, i);
-      const iso = toISODate(dateObj);
-
-      const bfProtein = pickOne(P, rand);
-      const bfCarb = pickOne(C, rand);
-      const lnProtein = pickOne(P, rand);
-      const lnCarb = pickOne(C, rand);
-      const dnProtein = pickOne(P, rand);
-      const dnCarb = pickOne(C, rand);
-
-      const veg1 = pickOne(V, rand);
-      const veg2 = pickOne(V, rand);
-      const snackP = pickOne(P, rand);
-      const snackF = pickOne(F, rand);
-
-      const breakfast = [
-        makeMealItem(bfProtein, 170),
-        makeMealItem(bfCarb, 60),
-      ];
-      const snack_am = [makeMealItem(snackP, 150)];
-      const lunch = [
-        makeMealItem(lnProtein, 170),
-        makeMealItem(lnCarb, 180),
-        makeMealItem(veg1, 120),
-      ];
-      const snack_pm = [
-        makeMealItem(snackF, 30),
-        makeMealItem(pickOne(V, rand), 120),
-      ];
-      const dinner = [
-        makeMealItem(dnProtein, 200),
-        makeMealItem(dnCarb, 200),
-        makeMealItem(veg2, 150),
-      ];
-
-      const day = {
-        date: iso,
-
-        // direct keys
-        breakfast,
-        snack_am,
-        lunch,
-        snack_pm,
-        dinner,
-
-        // nested keys
-        meals: { breakfast, snack_am, lunch, snack_pm, dinner },
-      };
-
-      day.totals = sumDay(day);
-      days.push(day);
-    }
-
-    const totals = days.reduce(
-      (acc, d) => {
-        acc.kcal += safeNum(d?.totals?.kcal, 0);
-        acc.protein_g += safeNum(d?.totals?.protein_g, 0);
-        acc.carbs_g += safeNum(d?.totals?.carbs_g, 0);
-        acc.fat_g += safeNum(d?.totals?.fat_g, 0);
-        return acc;
-      },
-      { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 }
-    );
-
-    totals.kcal = Math.round(totals.kcal);
-    totals.protein_g = +totals.protein_g.toFixed(1);
-    totals.carbs_g = +totals.carbs_g.toFixed(1);
-    totals.fat_g = +totals.fat_g.toFixed(1);
-    totals.calories = totals.kcal;
-
-    const plan = {
-      week_start: weekStartISO,
-      weekStart: weekStartISO,
-      startDate: weekStartISO,
-
-      days,
-      week: days,
-
-      totals,
-    };
-
-    return wrapPlan(plan);
+    // options can include user profile fields your Code.gs expects:
+    // height_cm, weight_kg, goal, activity, calories_target, protein_target, etc.
+    return fetchPlanFromBackend(options);
   },
 
-  regeneratePlan(options = {}) {
-    // force fresh output
-    return this.generatePlan({ ...options, seed: Date.now() });
+  async regeneratePlan(options = {}) {
+    // Force a new plan each time (backend should not return cached)
+    return fetchPlanFromBackend({ ...options, seed: Date.now(), t: Date.now() });
   },
 
   // extra aliases (some app.js versions call these)

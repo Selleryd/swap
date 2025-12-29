@@ -1,100 +1,76 @@
-// api.js (JSONP Bridge-less)
-// Works on GitHub Pages with Google Apps Script doGet() that supports ?callback=...
-// IMPORTANT: JSONP = GET-only. Your Apps Script routes must accept GET params.
-
+// api.js — ES Module + JSONP (works on GitHub Pages without CORS)
 "use strict";
 
-// 1) PUT YOUR /exec URL HERE (must be a deployed Web App)
-let EXEC_URL = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
+// ✅ Put your Apps Script /exec URL here
+const EXEC_URL = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
-/** Optional: allow changing URL at runtime */
-export function setExecUrl(url) {
-  EXEC_URL = String(url || "").trim();
-}
-
-/** Build querystring from a params object */
+/* -----------------------
+   JSONP core
+------------------------ */
 function toQuery(params = {}) {
   const sp = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => {
-    if (v === undefined || v === null) return;
-    // Support arrays (repeat keys)
-    if (Array.isArray(v)) {
-      v.forEach((item) => sp.append(k, String(item)));
-    } else {
-      sp.set(k, String(v));
-    }
-  });
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) v.forEach((item) => sp.append(k, String(item)));
+    else sp.set(k, String(v));
+  }
   return sp.toString();
 }
 
-/**
- * JSONP call to Apps Script
- * @param {string} route - e.g. "health", "meta", "foods", "food", "swap"
- * @param {object} params - route params
- * @param {object} opts - { timeoutMs }
- */
-export function jsonp(route, params = {}, opts = {}) {
-  const timeoutMs = Number(opts.timeoutMs ?? 15000);
-
+function jsonp(route, params = {}, { timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!EXEC_URL || !EXEC_URL.includes("/exec")) {
-      reject(new Error("EXEC_URL is not set to a valid Apps Script /exec URL."));
+      reject(new Error("EXEC_URL must be set to a valid Apps Script /exec URL"));
       return;
     }
 
-    const cbName = `__swap_jsonp_cb_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const cleanup = (scriptEl) => {
-      try { delete window[cbName]; } catch (_) { window[cbName] = undefined; }
-      if (scriptEl && scriptEl.parentNode) scriptEl.parentNode.removeChild(scriptEl);
+    const cbName =
+      "__swap_jsonp_cb_" + Date.now() + "_" + Math.random().toString(16).slice(2);
+
+    let script;
+    let done = false;
+
+    const cleanup = () => {
+      try { delete window[cbName]; } catch { window[cbName] = undefined; }
+      if (script && script.parentNode) script.parentNode.removeChild(script);
     };
 
-    let done = false;
     const timer = setTimeout(() => {
       if (done) return;
       done = true;
-      cleanup(script);
+      cleanup();
       reject(
         new Error(
-          "JSONP timeout (no callback). Usually means: deployment not public, wrong EXEC_URL, or server threw an error before responding."
+          "JSONP timeout (no callback). Usually: wrong EXEC_URL, Web App not public, or server error before callback."
         )
       );
     }, timeoutMs);
 
-    // Define the callback the server will call: callback(<object>)
     window[cbName] = (data) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      cleanup(script);
-
-      // Some backends may return stringified JSON inside JSONP
-      if (typeof data === "string") {
-        try { resolve(JSON.parse(data)); }
-        catch { resolve({ ok: true, data }); }
-        return;
-      }
+      cleanup();
       resolve(data);
     };
 
-    // Build URL: /exec?route=...&...&callback=cbName&t=...
     const qs = toQuery({
-      route: (route || "health").toLowerCase(),
-      ...params,
+      route: String(route || "health").toLowerCase(),
       callback: cbName,
-      t: Date.now(), // bust caching
+      t: Date.now(),
+      ...params,
     });
 
-    const url = `${EXEC_URL}${EXEC_URL.includes("?") ? "&" : "?"}${qs}`;
+    const url = EXEC_URL + (EXEC_URL.includes("?") ? "&" : "?") + qs;
 
-    const script = document.createElement("script");
+    script = document.createElement("script");
     script.src = url;
     script.async = true;
-
     script.onerror = () => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      cleanup(script);
+      cleanup();
       reject(new Error("JSONP script load error. Check EXEC_URL / deployment access."));
     };
 
@@ -102,40 +78,52 @@ export function jsonp(route, params = {}, opts = {}) {
   });
 }
 
-/** Generic route caller (recommended) */
-export async function call(route, params = {}, opts = {}) {
-  const res = await jsonp(route, params, opts);
+/* -----------------------
+   Public API (exported)
+------------------------ */
+export const API = {
+  execUrl: EXEC_URL,
 
-  // Standardize: if server returns {ok:false,...} treat as error
-  if (res && typeof res === "object" && res.ok === false) {
-    const msg = res.error || "Server returned ok:false";
-    const err = new Error(msg);
-    err.response = res;
-    throw err;
-  }
-  return res;
-}
+  jsonp,
 
-/* Convenience helpers matching your backend routes */
-export const api = {
-  setExecUrl,
+  health(opts) {
+    return jsonp("health", {}, opts);
+  },
 
-  health: (opts) => call("health", {}, opts),
-  meta: (opts) => call("meta", {}, opts),
+  meta(opts) {
+    return jsonp("meta", {}, opts);
+  },
 
-  foods: (q, { limit = 25, group } = {}, opts) =>
-    call("foods", { q, limit, group }, opts),
+  foods(q, { limit = 25, group = "" } = {}, opts) {
+    return jsonp("foods", { q, limit, group }, opts);
+  },
 
-  food: (id, opts) => call("food", { id }, opts),
+  food(id, opts) {
+    return jsonp("food", { id }, opts);
+  },
 
-  swap: (id, { portion_g = 140, tol = 0.05, flex = 0, limit = 12, same_group = 1 } = {}, opts) =>
-    call("swap", { id, portion_g, tol, flex, limit, same_group }, opts),
+  swap(
+    id,
+    {
+      portion_g = 140,
+      tol = 0.05,
+      flex = 0,
+      limit = 12,
+      same_group = 1,
+    } = {},
+    opts
+  ) {
+    return jsonp(
+      "swap",
+      { id, portion_g, tol, flex, limit, same_group },
+      opts
+    );
+  },
 
-  refreshCache: (opts) => call("refreshcache", {}, opts),
-
-  // Generic if your UI calls unknown routes
-  call,
+  refreshCache(opts) {
+    return jsonp("refreshcache", {}, opts);
+  },
 };
 
-// Also expose a global for non-module code (safe/no conflicts)
-window.SWAP_API = api;
+// Optional default export if you ever want: import API from "./api.js"
+export default API;

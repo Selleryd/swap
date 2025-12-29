@@ -1,5 +1,5 @@
 // Your Apps Script Web App URL (keep as-is unless you redeploy)
-export const API_BASE = "https://script.google.com/macros/s/AKfycbxoVkI3xIJ1ErMrQ07pG1Oj2dPE-G1-85R1zTXIHB61j_X66JqoyezCadtdQB6qfenfmQ/exec";
+export const API_BASE = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
 
 async function postJSON(action, payload){
   const res = await fetch(API_BASE, {

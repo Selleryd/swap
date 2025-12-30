@@ -1,548 +1,755 @@
-// ui.js (ESM) — SWAP UI renderer
-// Exports: mountTemplate (required by app.js), plus helpers used by app layer.
-// Version: 2025-12-30.3
+// ui.js (ES Module)
+// Provides the exact named exports app.js imports.
+// Focus: stable mounting + clean calendar rendering + recipes rendering + swap sidebar rendering.
 
-export const UI_VERSION = "ui-2025-12-30.3";
+"use strict";
 
-// -----------------------------
-// Fail-open (prevents blank page)
-// -----------------------------
-export function failOpen() {
-  try {
-    document.documentElement.style.visibility = "visible";
-    document.body.style.visibility = "visible";
-    document.body.style.opacity = "1";
-    document.body.style.display = "";
-    document.documentElement.classList.remove("preload", "loading", "is-loading", "hidden");
-    document.body.classList.remove("preload", "loading", "is-loading", "hidden");
-  } catch (_) {}
-}
-
-// -----------------------------
-// DOM helpers
-// -----------------------------
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-
-function safeJSONParse(s, fallback = null) {
-  try { return JSON.parse(s); } catch (_) { return fallback; }
-}
-function isoToDate(iso) {
-  const d = new Date(String(iso || "") + "T00:00:00");
-  return isNaN(d.getTime()) ? null : d;
-}
-function fmtDow(d) { return d.toLocaleDateString(undefined, { weekday: "long" }); }
-function fmtMD(d) { return d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" }); }
-function ellipsize(s, n) {
-  s = String(s || "").trim();
-  if (s.length <= n) return s;
-  return s.slice(0, Math.max(0, n - 1)).trim() + "…";
-}
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-
-// -----------------------------
-// Style injection
-// -----------------------------
-function injectStyles() {
-  if ($("#swap-ui-css")) return;
-  const css = `
-/* ---- SWAP UI injected styles (scoped) ---- */
-.swap-ui-weekwrap { overflow-x: auto; padding-bottom: 10px; }
-.swap-ui-weekgrid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(240px, 1fr));
-  gap: 14px;
-  align-items: start;
-  width: 100%;
-}
-@media (max-width: 1100px) {
-  .swap-ui-weekgrid { width: max-content; grid-template-columns: repeat(7, 280px); scroll-snap-type: x mandatory; }
-  .swap-ui-day { scroll-snap-align: start; }
-}
-.swap-ui-day {
-  background: rgba(255,255,255,0.78);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  padding: 12px;
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
-}
-.swap-ui-dayhead { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:10px; }
-.swap-ui-dayname { font-weight: 900; font-size: 13px; color: rgba(15, 23, 42, 0.92); }
-.swap-ui-daydate { font-size: 12px; color: rgba(71, 85, 105, 0.92); font-weight: 700; }
-
-.swap-ui-meal { margin-top: 10px; }
-.swap-ui-mealhead { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-bottom:6px; border-bottom:1px solid rgba(15, 23, 42, 0.06); }
-.swap-ui-meallabel { font-size: 12px; font-weight: 900; color: rgba(51, 65, 85, 0.95); }
-.swap-ui-mealmeta { font-size: 11px; font-weight: 700; color: rgba(100, 116, 139, 0.95); white-space:nowrap; }
-
-.swap-ui-items { display:grid; gap: 8px; margin-top: 8px; }
-.swap-ui-food {
-  width: 100%;
-  text-align: left;
-  border: 1px solid rgba(15, 23, 42, 0.09);
-  background: rgba(255,255,255,0.96);
-  border-radius: 14px;
-  padding: 9px 10px;
-  cursor: pointer;
-  transition: transform .08s ease, box-shadow .12s ease, border-color .12s ease;
-}
-.swap-ui-food:hover { transform: translateY(-1px); box-shadow: 0 14px 30px rgba(15, 23, 42, 0.10); border-color: rgba(15, 23, 42, 0.16); }
-.swap-ui-food.is-selected { outline: 2px solid rgba(99, 102, 241, 0.55); box-shadow: 0 16px 40px rgba(99, 102, 241, 0.18); }
-
-.swap-ui-foodname { font-size: 12px; font-weight: 900; color: rgba(15, 23, 42, 0.92); line-height: 1.2; }
-.swap-ui-foodsub { font-size: 11px; font-weight: 700; color: rgba(71, 85, 105, 0.92); margin-top: 3px; display:flex; gap:10px; flex-wrap:wrap; }
-.swap-ui-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; border:1px solid rgba(15, 23, 42, 0.08); background: rgba(248, 250, 252, 0.9); }
-
-.swap-ui-dot { width:8px; height:8px; border-radius:999px; opacity:0.9; }
-.swap-ui-dot.protein{ background: rgba(34, 197, 94, 0.95); }
-.swap-ui-dot.carb{ background: rgba(168, 85, 247, 0.95); }
-.swap-ui-dot.fat{ background: rgba(239, 68, 68, 0.92); }
-.swap-ui-dot.fruit{ background: rgba(59, 130, 246, 0.92); }
-.swap-ui-dot.veg{ background: rgba(20, 184, 166, 0.92); }
-.swap-ui-dot.other{ background: rgba(148, 163, 184, 0.92); }
-
-.swap-ui-muted { font-size: 12px; color: rgba(100, 116, 139, 0.95); font-weight: 700; padding: 10px 0; }
-
-/* Swaps panel */
-.swap-ui-swaps { display:grid; gap:10px; }
-.swap-ui-seltitle { font-size: 13px; font-weight: 950; color: rgba(15, 23, 42, 0.92); }
-.swap-ui-selmeta { font-size: 11px; font-weight: 700; color: rgba(100, 116, 139, 0.95); }
-.swap-ui-swaprow {
-  border: 1px solid rgba(15, 23, 42, 0.09);
-  background: rgba(255,255,255,0.96);
-  border-radius: 14px;
-  padding: 10px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 12px;
-}
-.swap-ui-swapname { font-size: 12px; font-weight: 900; color: rgba(15, 23, 42, 0.92); line-height:1.2; }
-.swap-ui-swapmeta { margin-top:3px; font-size: 11px; font-weight: 700; color: rgba(71, 85, 105, 0.92); }
-.swap-ui-btn {
-  border: 1px solid rgba(15, 23, 42, 0.10);
-  background: rgba(248, 250, 252, 0.92);
-  border-radius: 12px;
-  padding: 8px 10px;
-  font-weight: 900;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.swap-ui-btn:hover { border-color: rgba(15, 23, 42, 0.18); }
-
-/* Recipes accordion */
-.swap-ui-recipes { display:grid; gap:10px; }
-.swap-ui-acc { border:1px solid rgba(15,23,42,0.09); background: rgba(255,255,255,0.92); border-radius: 18px; overflow:hidden; }
-.swap-ui-accbtn { width:100%; text-align:left; padding:12px 14px; display:flex; justify-content:space-between; gap:12px; cursor:pointer; border:0; background:transparent; }
-.swap-ui-acctitle { font-size:13px; font-weight: 950; color: rgba(15,23,42,0.92); }
-.swap-ui-accsub { font-size:12px; font-weight: 700; color: rgba(100,116,139,0.95); white-space:nowrap; }
-.swap-ui-accbody { padding: 0 14px 14px 14px; display:none; }
-.swap-ui-acc.is-open .swap-ui-accbody { display:block; }
-.swap-ui-recipeblock { border-top: 1px solid rgba(15,23,42,0.06); padding-top: 10px; margin-top: 10px; }
-.swap-ui-recipename { font-weight: 950; font-size: 12px; color: rgba(15,23,42,0.92); }
-.swap-ui-recipetext { margin-top:6px; font-size:12px; line-height:1.5; color: rgba(51,65,85,0.95); white-space: pre-wrap; }
-.swap-ui-link { margin-top: 8px; display:inline-flex; font-size:12px; font-weight: 900; cursor:pointer; color: rgba(99,102,241,0.95); }
-.swap-ui-link:hover { text-decoration: underline; }
-  `.trim();
+/* -----------------------------
+   Small, namespaced UI styles
+   ----------------------------- */
+function ensureInlineStyles_() {
+  if (document.getElementById("swap-ui-inline-styles")) return;
   const style = document.createElement("style");
-  style.id = "swap-ui-css";
-  style.textContent = css;
+  style.id = "swap-ui-inline-styles";
+  style.textContent = `
+  .swap-ui * { box-sizing: border-box; }
+  .swap-ui {
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    color: #0f172a;
+  }
+  .swap-ui .shell {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    min-height: 100vh;
+    background: radial-gradient(1200px 600px at 60% -10%, rgba(99,102,241,.18), transparent 60%),
+                radial-gradient(900px 500px at 90% 30%, rgba(16,185,129,.14), transparent 60%),
+                #f8fafc;
+  }
+  .swap-ui .sidebar {
+    padding: 18px 14px;
+    border-right: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.6);
+    backdrop-filter: blur(14px);
+  }
+  .swap-ui .brand {
+    display:flex; gap:10px; align-items:center;
+    padding: 10px 10px 16px 10px;
+  }
+  .swap-ui .brand .logo {
+    width: 44px; height: 44px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(99,102,241,.25), rgba(16,185,129,.25));
+    border: 1px solid rgba(15,23,42,.08);
+    display:grid; place-items:center;
+    font-weight: 800;
+  }
+  .swap-ui .brand .title { font-weight: 800; line-height: 1.1; }
+  .swap-ui .brand .sub { font-size: 12px; opacity: .72; margin-top: 2px; }
+
+  .swap-ui .nav {
+    display:flex; flex-direction:column; gap:10px;
+    padding: 10px;
+  }
+  .swap-ui .nav button {
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.7);
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .swap-ui .nav button.is-active {
+    background: rgba(99,102,241,.12);
+    border-color: rgba(99,102,241,.25);
+  }
+  .swap-ui .sidebarFooter {
+    margin-top: auto;
+    padding: 12px 10px;
+    position: sticky;
+    bottom: 10px;
+  }
+  .swap-ui .statusPill {
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.75);
+  }
+  .swap-ui .statusText { font-weight: 700; opacity: .85; }
+  .swap-ui .resetBtn {
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(15,23,42,.1);
+    background: rgba(255,255,255,.9);
+    cursor:pointer;
+    font-weight: 800;
+  }
+
+  .swap-ui .main {
+    padding: 18px;
+  }
+  .swap-ui .topbar {
+    display:flex; justify-content:space-between; align-items:center;
+    padding: 12px 14px;
+    border-radius: 18px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.75);
+    backdrop-filter: blur(14px);
+  }
+  .swap-ui .topbar .crumb {
+    font-weight: 900;
+  }
+  .swap-ui .statsPill {
+    font-weight: 800;
+    font-size: 13px;
+    color: rgba(15,23,42,.75);
+    padding: 8px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.85);
+  }
+
+  .swap-ui .contentGrid {
+    margin-top: 14px;
+    display:grid;
+    grid-template-columns: 1.55fr .85fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .swap-ui .card {
+    border-radius: 22px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.75);
+    backdrop-filter: blur(14px);
+    box-shadow: 0 18px 50px rgba(2,6,23,.08);
+  }
+  .swap-ui .cardHeader {
+    padding: 14px 16px 10px 16px;
+    display:flex; justify-content:space-between; align-items:flex-start; gap:10px;
+    border-bottom: 1px solid rgba(15,23,42,.06);
+  }
+  .swap-ui .cardHeader h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 900;
+  }
+  .swap-ui .muted { opacity: .7; font-size: 13px; margin-top: 2px; }
+  .swap-ui .btnRow { display:flex; gap:10px; }
+  .swap-ui .btn {
+    border: 0;
+    padding: 10px 12px;
+    border-radius: 14px;
+    cursor: pointer;
+    font-weight: 900;
+    background: rgba(255,255,255,.9);
+    border: 1px solid rgba(15,23,42,.1);
+  }
+  .swap-ui .btnPrimary {
+    background: linear-gradient(135deg, rgba(99,102,241,1), rgba(16,185,129,1));
+    color: white;
+    border: 0;
+  }
+  .swap-ui .cardBody { padding: 14px 16px 16px 16px; }
+
+  /* Calendar layout */
+  .swap-ui .calendarScroller {
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .swap-ui .calendarGrid {
+    display:grid;
+    grid-template-columns: repeat(7, minmax(220px, 1fr));
+    gap: 10px;
+    min-width: 980px;
+  }
+  .swap-ui .dayCol {
+    border-radius: 18px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.78);
+    padding: 10px;
+  }
+  .swap-ui .dayHead {
+    display:flex; justify-content:space-between; align-items:baseline;
+    gap: 8px;
+    padding: 4px 6px 10px 6px;
+  }
+  .swap-ui .dayName { font-weight: 950; }
+  .swap-ui .dayDate { font-size: 12px; opacity: .68; font-weight: 800; }
+
+  .swap-ui .mealBlock { padding: 8px 6px; border-top: 1px dashed rgba(15,23,42,.12); }
+  .swap-ui .mealLabel { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; opacity: .7; font-weight: 900; }
+  .swap-ui .pillList { display:flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .swap-ui .foodPill {
+    border: 1px solid rgba(15,23,42,.12);
+    background: rgba(255,255,255,.95);
+    border-radius: 999px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-weight: 800;
+    font-size: 12px;
+    line-height: 1.05;
+    max-width: 100%;
+    text-align: left;
+  }
+  .swap-ui .foodPill:hover { border-color: rgba(99,102,241,.35); box-shadow: 0 10px 22px rgba(2,6,23,.08); }
+  .swap-ui .foodPill .subline { display:block; margin-top: 4px; font-size: 11px; opacity: .62; font-weight: 900; }
+
+  /* Swaps panel */
+  .swap-ui .swapIntro {
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px dashed rgba(15,23,42,.18);
+    background: rgba(255,255,255,.7);
+    font-weight: 800;
+    color: rgba(15,23,42,.8);
+  }
+  .swap-ui .swapList { margin-top: 12px; display:flex; flex-direction:column; gap: 8px; }
+  .swap-ui .swapRow {
+    display:flex; justify-content:space-between; align-items:flex-start; gap:10px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(15,23,42,.1);
+    background: rgba(255,255,255,.85);
+    cursor: pointer;
+  }
+  .swap-ui .swapRow:hover { border-color: rgba(16,185,129,.35); box-shadow: 0 10px 22px rgba(2,6,23,.08); }
+  .swap-ui .swapName { font-weight: 950; font-size: 13px; }
+  .swap-ui .swapMeta { font-size: 12px; opacity: .72; font-weight: 900; margin-top: 4px; }
+  .swap-ui .swapKcal { font-weight: 950; font-size: 12px; opacity: .85; white-space: nowrap; }
+
+  /* Recipes */
+  .swap-ui .recipesList { display:flex; flex-direction:column; gap: 10px; }
+  .swap-ui details {
+    border-radius: 18px;
+    border: 1px solid rgba(15,23,42,.08);
+    background: rgba(255,255,255,.8);
+    padding: 10px 12px;
+  }
+  .swap-ui summary { cursor: pointer; font-weight: 950; }
+  .swap-ui .recipeBody { margin-top: 10px; font-weight: 700; opacity: .88; line-height: 1.45; white-space: pre-wrap; }
+  .swap-ui .view { display:none; }
+  .swap-ui .view.is-active { display:block; }
+
+  @media (max-width: 980px) {
+    .swap-ui .shell { grid-template-columns: 1fr; }
+    .swap-ui .sidebar { position: sticky; top: 0; z-index: 5; border-right: 0; border-bottom: 1px solid rgba(15,23,42,.08); }
+    .swap-ui .contentGrid { grid-template-columns: 1fr; }
+    .swap-ui .calendarGrid { min-width: 820px; }
+  }
+  `;
   document.head.appendChild(style);
 }
 
-// -----------------------------
-// Mount points (non brittle)
-// -----------------------------
-function findHeading(text) {
-  const t = String(text || "").trim().toLowerCase();
-  for (const h of $$("h1,h2,h3")) {
-    if (String(h.textContent || "").trim().toLowerCase() === t) return h;
-  }
-  return null;
-}
-function getPlanMount() {
-  return (
-    $("#swap-week-grid") ||
-    $("[data-swap-week-grid]") ||
-    $("#weekGrid") ||
-    $("#week-grid") ||
-    $(".week-plan-grid") ||
-    (function () {
-      const h = findHeading("Week Plan");
-      return h ? h.closest("section,div") : null;
-    })()
-  );
-}
-function getSwapsMount() {
-  return (
-    $("#swap-swaps") ||
-    $("[data-swap-swaps]") ||
-    $("#swapsPanel") ||
-    $("#swaps-panel") ||
-    $(".swaps-panel") ||
-    (function () {
-      const h = findHeading("Swaps");
-      return h ? h.closest("section,div") : null;
-    })()
-  );
-}
-function getRecipesMount() {
-  return (
-    $("#swap-recipes") ||
-    $("[data-swap-recipes]") ||
-    $("#recipesList") ||
-    $("#recipes-list") ||
-    $(".recipes-list") ||
-    (function () {
-      const h = findHeading("Recipes");
-      return h ? h.closest("section,div") : null;
-    })()
-  );
-}
-
-// -----------------------------
-// Public state + exports used by app.js
-// -----------------------------
-export const state = {
-  plan: null,
-  selected: null, // {dayIndex, mealKey, itemIndex, item}
-  swaps: [],
-  recipes: null,
-};
-
-// Storage keys (compatible with different past versions)
-const PLAN_KEYS = ["swap.plan", "SWAP_PLAN", "swap_plan", "swap:plan"];
-
-export function savePlan(plan) {
-  try { localStorage.setItem("swap.plan", JSON.stringify(plan)); } catch (_) {}
-}
-export function loadPlan() {
-  for (const k of PLAN_KEYS) {
-    const v = localStorage.getItem(k);
-    if (!v) continue;
-    const p = safeJSONParse(v, null);
-    if (p && (p.days || p.weekStart)) return p;
-  }
-  return null;
-}
-
-// -----------------------------
-// REQUIRED BY app.js
-// mountTemplate: should mount a base template if needed.
-// We keep it safe: if DOM already exists, it won't overwrite.
-// -----------------------------
-export function mountTemplate() {
-  injectStyles();
-  failOpen();
-
-  // If your HTML already includes layout, do nothing.
-  // This function only ensures required mount containers exist.
-  const planMount = getPlanMount();
-  const swapsMount = getSwapsMount();
-  const recipesMount = getRecipesMount();
-
-  // If mounts exist, we’re good.
-  if (planMount && swapsMount && recipesMount) return;
-
-  // Minimal fallback layout (only if your page is missing containers)
-  const root = $("#app") || document.body;
-  const shell = document.createElement("div");
-  shell.innerHTML = `
-    <div style="max-width:1400px;margin:0 auto;padding:18px;display:grid;grid-template-columns:1fr 360px;gap:16px;">
-      <div>
-        <div id="swap-week-grid"></div>
-        <div style="height:18px"></div>
-        <div id="swap-recipes"></div>
-      </div>
-      <div id="swap-swaps"></div>
-    </div>
-  `;
-  root.appendChild(shell);
-}
-
-// -----------------------------
-// Meal plan calendar rendering
-// -----------------------------
-const MEAL_ORDER = [
-  { key: "breakfast", label: "Breakfast" },
-  { key: "snack_am", label: "Snack (AM)" },
-  { key: "lunch", label: "Lunch" },
-  { key: "snack_pm", label: "Snack (PM)" },
-  { key: "dinner", label: "Dinner" },
-];
-
-function normalizeMealKey(k) {
-  k = String(k || "").toLowerCase().trim();
-  if (k === "snack (am)" || k === "snack_am" || k === "snackam") return "snack_am";
-  if (k === "snack (pm)" || k === "snack_pm" || k === "snackpm") return "snack_pm";
-  if (k === "breakfast") return "breakfast";
-  if (k === "lunch") return "lunch";
-  if (k === "dinner") return "dinner";
-  return k || "other";
-}
-
-function groupDotClass(group) {
-  group = String(group || "").toLowerCase();
-  if (group.includes("protein")) return "protein";
-  if (group.includes("carb") || group.includes("grain") || group.includes("starch")) return "carb";
-  if (group.includes("fat") || group.includes("oil")) return "fat";
-  if (group.includes("fruit")) return "fruit";
-  if (group.includes("veg")) return "veg";
-  return "other";
-}
-
-function mealTotals(meal) {
-  const items = meal?.items || [];
-  let c = 0;
-  for (const it of items) c += Number(it.calories || 0) || 0;
-  return Math.round(c);
-}
-
-export function renderPlan(plan) {
-  mountTemplate(); // ensures mounts exist
-  state.plan = plan;
-  savePlan(plan);
-
-  const mount = getPlanMount();
-  if (!mount) return;
-
-  const days = Array.isArray(plan?.days) ? plan.days : [];
-  if (!days.length) {
-    mount.innerHTML = `<div class="swap-ui-muted">No plan found for this week yet.</div>`;
-    return;
-  }
-
-  const html = `
-    <div class="swap-ui-weekwrap">
-      <div class="swap-ui-weekgrid">
-        ${days.map((day, dayIndex) => {
-          const d = isoToDate(day.date) || new Date();
-          const meals = Array.isArray(day.meals) ? day.meals : [];
-          const mealMap = {};
-          for (const m of meals) mealMap[normalizeMealKey(m.key || m.label)] = m;
-
-          return `
-            <div class="swap-ui-day" data-day-index="${dayIndex}">
-              <div class="swap-ui-dayhead">
-                <div class="swap-ui-dayname">${fmtDow(d)}</div>
-                <div class="swap-ui-daydate">${fmtMD(d)}</div>
+/* -----------------------------
+   Templates
+   ----------------------------- */
+const TEMPLATES_ = {
+  tplSplash: (data = {}) => `
+    <div class="swap-ui">
+      <div class="shell" style="grid-template-columns: 1fr;">
+        <div class="main" style="display:grid; place-items:center;">
+          <div class="card" style="max-width: 820px; width: 100%;">
+            <div class="cardHeader" style="border-bottom:0;">
+              <div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                  <div class="logo" style="width:54px;height:54px;border-radius:18px;font-weight:1000;display:grid;place-items:center;">SW</div>
+                  <div>
+                    <div style="font-size:20px;font-weight:1000;">SWAP</div>
+                    <div class="muted">Switch With Any Portion</div>
+                  </div>
+                </div>
               </div>
+              <div class="statsPill" id="topbarStats">Ready</div>
+            </div>
+            <div class="cardBody" style="padding-top: 6px;">
+              <div style="font-size:34px;font-weight:1000;line-height:1.05;margin: 6px 0 10px 0;">
+                Build a week plan.<br/>Swap any item.
+              </div>
+              <div class="muted" style="font-size:14px;max-width: 640px;">
+                Generate a structured week plan and click any item to see equivalent swaps from your food database.
+              </div>
+              <div style="margin-top: 18px; display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="btn btnPrimary" data-action="go-intake">Enter now</button>
+                <button class="btn" data-action="go-profile">Profile</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
 
-              ${MEAL_ORDER.map(({ key, label }) => {
-                const m = mealMap[key] || { key, label, items: [] };
-                const items = Array.isArray(m.items) ? m.items : [];
+  tplShell: () => `
+    <div class="swap-ui">
+      <div class="shell">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="logo">SW</div>
+            <div>
+              <div class="title">SWAP</div>
+              <div class="sub">Switch With Any Portion</div>
+            </div>
+          </div>
 
-                return `
-                  <div class="swap-ui-meal" data-meal-key="${key}">
-                    <div class="swap-ui-mealhead">
-                      <div class="swap-ui-meallabel">${label}</div>
-                      <div class="swap-ui-mealmeta">${items.length ? `${mealTotals(m)} kcal` : ""}</div>
-                    </div>
-                    <div class="swap-ui-items">
-                      ${items.length ? items.map((it, itemIndex) => {
-                        const g = groupDotClass(it.group);
-                        const grams = Math.round(Number(it.grams || it.portion_g || 0) || 0);
-                        const cals = Math.round(Number(it.calories || 0) || 0);
-                        const name = String(it.name || "Food item");
-                        return `
-                          <button type="button"
-                            class="swap-ui-food"
-                            data-day-index="${dayIndex}"
-                            data-meal-key="${key}"
-                            data-item-index="${itemIndex}"
-                          >
-                            <div class="swap-ui-foodname">${ellipsize(name, 44)}</div>
-                            <div class="swap-ui-foodsub">
-                              <span class="swap-ui-tag"><span class="swap-ui-dot ${g}"></span>${String(it.group || "other")}</span>
-                              <span class="swap-ui-tag">${grams ? `${grams} g` : "portion"}</span>
-                              <span class="swap-ui-tag">${cals ? `${cals} kcal` : "kcal"}</span>
-                            </div>
-                          </button>
-                        `;
-                      }).join("") : `<div class="swap-ui-muted">—</div>`}
+          <div class="nav">
+            <button class="is-active" id="navPlan" data-action="tab" data-tab="plan" data-target="plan">Meal Plan</button>
+            <button id="navRecipes" data-action="tab" data-tab="recipes" data-target="recipes">Recipes</button>
+            <button id="navProfile" data-action="tab" data-tab="profile" data-target="profile">Profile</button>
+          </div>
+
+          <div class="sidebarFooter">
+            <div class="statusPill">
+              <span class="statusText" id="statusText">Ready</span>
+              <button class="resetBtn" data-action="reset">Reset</button>
+            </div>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div class="topbar">
+            <div class="crumb" id="topbarTitle">Meal Plan</div>
+            <div class="statsPill" id="topbarStats">—</div>
+          </div>
+
+          <!-- PLAN VIEW -->
+          <section class="view is-active" id="viewPlan" data-view="plan" data-tab-page="plan">
+            <div class="contentGrid">
+              <div class="card">
+                <div class="cardHeader">
+                  <div>
+                    <h2>Week Plan</h2>
+                    <div class="muted" id="weekStartText">—</div>
+                    <div class="muted" style="margin-top:6px;">
+                      Click any food item to see equivalent swaps.
                     </div>
                   </div>
-                `;
-              }).join("")}
+                  <div class="btnRow">
+                    <button class="btn btnPrimary" data-action="generate-plan" id="btnGeneratePlan">Generate</button>
+                    <button class="btn" data-action="regenerate-plan" id="btnRegeneratePlan">Regenerate</button>
+                  </div>
+                </div>
+                <div class="cardBody">
+                  <div class="calendarScroller">
+                    <div class="calendarGrid" id="calendarGrid"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="cardHeader">
+                  <div>
+                    <h2>Swaps</h2>
+                    <div class="muted" id="swapHint">Click a food item to see equivalent swaps.</div>
+                  </div>
+                </div>
+                <div class="cardBody">
+                  <div id="swapSidebar">
+                    <div class="swapIntro" id="swapIntro">
+                      <div style="font-weight:950;">Select a food</div>
+                      <div style="margin-top:6px;font-weight:800;opacity:.8;">
+                        We’ll show equivalent swaps in the same subgroup first (fruit→fruit, grain→grain), then allowed alternates.
+                      </div>
+                    </div>
+                    <div class="swapList" id="swapResults"></div>
+                  </div>
+
+                  <div style="margin-top:14px; border-top: 1px solid rgba(15,23,42,.06); padding-top: 12px;">
+                    <div style="font-weight:950; font-size:13px;">Free Foods (extra hunger)</div>
+                    <div class="pillList" id="freeFoods"></div>
+                  </div>
+                </div>
+              </div>
             </div>
-          `;
-        }).join("")}
+          </section>
+
+          <!-- RECIPES VIEW -->
+          <section class="view" id="viewRecipes" data-view="recipes" data-tab-page="recipes">
+            <div class="card">
+              <div class="cardHeader">
+                <div>
+                  <h2>Recipes</h2>
+                  <div class="muted">Recipes generate when you request them. They’re stored in your browser so you don’t lose them.</div>
+                </div>
+                <div class="btnRow">
+                  <button class="btn btnPrimary" data-action="generate-recipes" id="btnGenerateRecipes">Generate recipes for this week</button>
+                </div>
+              </div>
+              <div class="cardBody">
+                <div class="recipesList" id="recipesList"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- PROFILE VIEW -->
+          <section class="view" id="viewProfile" data-view="profile" data-tab-page="profile">
+            <div class="card">
+              <div class="cardHeader">
+                <div>
+                  <h2>Profile</h2>
+                  <div class="muted">Your intake + targets live here.</div>
+                </div>
+              </div>
+              <div class="cardBody">
+                <div class="muted">Profile UI is handled in app.js (this is just a stable shell placeholder).</div>
+                <div style="margin-top:12px;">
+                  <button class="btn" data-action="go-intake">Edit intake</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </main>
       </div>
     </div>
-  `.trim();
+  `,
+};
 
-  mount.innerHTML = html;
-
-  // Highlight restore
-  if (state.selected) highlightSelected(state.selected);
+/* -----------------------------
+   Utilities
+   ----------------------------- */
+function esc_(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
-function highlightSelected(sel) {
-  $$(".swap-ui-food").forEach(b => b.classList.remove("is-selected"));
-  const btn = $(`.swap-ui-food[data-day-index="${sel.dayIndex}"][data-meal-key="${sel.mealKey}"][data-item-index="${sel.itemIndex}"]`);
-  if (btn) btn.classList.add("is-selected");
+function asDate_(iso) {
+  const d = new Date(String(iso || "").slice(0, 10) + "T00:00:00");
+  return isNaN(d.getTime()) ? null : d;
 }
 
-// -----------------------------
-// Swaps render + replace hooks
-// (app.js or ui.js can call loadSwaps externally; here we only render)
-// -----------------------------
-export function renderSwaps(selected, swaps) {
-  mountTemplate();
-  const mount = getSwapsMount();
-  if (!mount) return;
+function fmtDayName_(iso) {
+  const d = asDate_(iso);
+  if (!d) return "—";
+  return d.toLocaleDateString(undefined, { weekday: "long" });
+}
 
-  if (!selected) {
-    mount.innerHTML = `<div class="swap-ui-muted">Select a food item to see swaps.</div>`;
+function fmtShortDate_(iso) {
+  const d = asDate_(iso);
+  if (!d) return "—";
+  return d.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "numeric" });
+}
+
+function fmtWeekLabel_(weekStartIso) {
+  const d = asDate_(weekStartIso);
+  if (!d) return "Week Plan";
+  return `Week of ${d.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "numeric" })}`;
+}
+
+function normalizePlan_(planLike) {
+  let plan = planLike;
+  if (!plan) return null;
+  if (plan.ok && plan.plan) plan = plan.plan;
+
+  // expected:
+  // { weekStart, targets, days:[{date, meals:[{key,label,items:[...]}]}] }
+  const weekStart = plan.weekStart || plan.week_start || plan.start || plan.week || null;
+  const targets = plan.targets || plan.goal || plan.macros || null;
+  const days = Array.isArray(plan.days) ? plan.days : Array.isArray(plan.week) ? plan.week : null;
+
+  if (!days) return { weekStart, targets, days: [] };
+
+  // ensure each day has a meals array
+  const fixedDays = days.map((d) => {
+    const date = d.date || d.day || d.iso || null;
+    const meals = Array.isArray(d.meals) ? d.meals : [];
+    return { date, meals };
+  });
+
+  return { weekStart, targets, days: fixedDays };
+}
+
+function mealOrder_() {
+  return [
+    { key: "breakfast", label: "Breakfast" },
+    { key: "snack_am", label: "Snack (AM)" },
+    { key: "lunch", label: "Lunch" },
+    { key: "snack_pm", label: "Snack (PM)" },
+    { key: "dinner", label: "Dinner" },
+  ];
+}
+
+function findMeal_(meals, key) {
+  // accept: snack-am, snack_am, snack (am), etc
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const wanted = norm(key);
+  return (meals || []).find((m) => norm(m.key || m.id || m.name || "") === wanted) || null;
+}
+
+/* -----------------------------
+   Exported API (used by app.js)
+   ----------------------------- */
+function mountTemplate(root, templateName, data) {
+  ensureInlineStyles_();
+  const tpl = TEMPLATES_[templateName];
+  if (!tpl) throw new Error(`ui.js: unknown template "${templateName}"`);
+  root.innerHTML = typeof tpl === "function" ? tpl(data) : String(tpl);
+}
+
+function setStatus(text) {
+  const el = document.getElementById("statusText");
+  if (el) el.textContent = String(text ?? "");
+}
+
+function setTopbar(value) {
+  // Accept either object {kcal, protein} or string.
+  const el = document.getElementById("topbarStats");
+  if (!el) return;
+
+  if (value && typeof value === "object") {
+    const kcal = value.kcal ?? value.calories ?? value.kcal_per_day ?? "—";
+    const protein = value.protein ?? value.protein_g ?? value.protein_per_day ?? "—";
+    el.textContent = `${kcal} kcal/day • ≥${protein}g protein/day`;
+    return;
+  }
+  el.textContent = String(value ?? "—");
+}
+
+function renderCalendar(planLike) {
+  const grid = document.getElementById("calendarGrid");
+  if (!grid) return;
+
+  const plan = normalizePlan_(planLike);
+
+  const weekStartEl = document.getElementById("weekStartText");
+  if (weekStartEl) weekStartEl.textContent = plan?.weekStart ? fmtWeekLabel_(plan.weekStart) : "Week Plan";
+
+  // If no plan yet, show a tidy placeholder week.
+  const days = (plan?.days && plan.days.length) ? plan.days : Array.from({ length: 7 }).map((_, i) => ({ date: null, meals: [] }));
+
+  const mealDefs = mealOrder_();
+
+  grid.innerHTML = days
+    .map((day, idx) => {
+      const dateIso = day.date || null;
+      const dayName = dateIso ? fmtDayName_(dateIso) : ["Saturday","Sunday","Monday","Tuesday","Wednesday","Thursday","Friday"][idx] || "Day";
+      const dayDate = dateIso ? fmtShortDate_(dateIso) : "—";
+
+      const mealsHtml = mealDefs.map(({ key, label }) => {
+        const meal = findMeal_(day.meals, key);
+        const items = Array.isArray(meal?.items) ? meal.items : [];
+
+        const pills = items.length
+          ? items.map((it) => {
+              const id = it.id ?? it.foodId ?? it.usda_id ?? "";
+              const name = it.name ?? it.title ?? "Item";
+              const grams = it.grams ?? it.g ?? it.portion_g ?? it.portion ?? "";
+              const kcal = it.calories ?? it.kcal ?? "";
+              const p = it.protein_g ?? it.protein ?? "";
+              const c = it.carbs_g ?? it.carbs ?? "";
+              const f = it.fat_g ?? it.fat ?? "";
+              const group = it.group ?? "";
+              const subgroup = it.subgroup ?? "";
+
+              const subline = grams ? `${grams}g${kcal ? ` • ${kcal} kcal` : ""}` : (kcal ? `${kcal} kcal` : "");
+
+              return `
+                <button
+                  class="foodPill"
+                  type="button"
+                  title="${esc_(name)}"
+                  data-action="select-food"
+                  data-food-id="${esc_(id)}"
+                  data-food-name="${esc_(name)}"
+                  data-food-grams="${esc_(grams)}"
+                  data-food-calories="${esc_(kcal)}"
+                  data-food-protein_g="${esc_(p)}"
+                  data-food-carbs_g="${esc_(c)}"
+                  data-food-fat_g="${esc_(f)}"
+                  data-food-group="${esc_(group)}"
+                  data-food-subgroup="${esc_(subgroup)}"
+                  data-plan-date="${esc_(dateIso || "")}"
+                  data-plan-meal="${esc_(key)}"
+                >
+                  ${esc_(name)}
+                  ${subline ? `<span class="subline">${esc_(subline)}</span>` : ""}
+                </button>
+              `;
+            }).join("")
+          : `<div class="muted" style="margin-top:8px;">—</div>`;
+
+        return `
+          <div class="mealBlock">
+            <div class="mealLabel">${esc_(label)}</div>
+            <div class="pillList">${pills}</div>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <div class="dayCol">
+          <div class="dayHead">
+            <div class="dayName">${esc_(dayName)}</div>
+            <div class="dayDate">${esc_(dayDate)}</div>
+          </div>
+          ${mealsHtml}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderSwapSidebar(selectedFood) {
+  const hint = document.getElementById("swapHint");
+  const intro = document.getElementById("swapIntro");
+  const results = document.getElementById("swapResults");
+
+  if (!results) return;
+
+  // selectedFood can be null -> show intro again
+  if (!selectedFood) {
+    if (hint) hint.textContent = "Click a food item to see equivalent swaps.";
+    if (intro) intro.style.display = "";
+    results.innerHTML = "";
     return;
   }
 
-  const it = selected.item || {};
-  const grams = Math.round(Number(it.grams || it.portion_g || 0) || 0);
-  const cals = Math.round(Number(it.calories || 0) || 0);
-
-  const rows = Array.isArray(swaps) ? swaps : [];
-  mount.innerHTML = `
-    <div class="swap-ui-swaps">
-      <div>
-        <div class="swap-ui-seltitle">${ellipsize(String(it.name || "Selected item"), 64)}</div>
-        <div class="swap-ui-selmeta">${String(it.group || "other")} • ${grams ? `${grams} g` : "portion"} • ${cals ? `${cals} kcal` : "kcal"}</div>
-      </div>
-
-      ${rows.length ? rows.map((s, idx) => {
-        const sGrams = Math.round(Number(s.grams || s.portion_g || 0) || 0);
-        const sCals = Math.round(Number(s.calories || 0) || 0);
-        return `
-          <div class="swap-ui-swaprow">
-            <div>
-              <div class="swap-ui-swapname">${ellipsize(String(s.name || "Swap"), 54)}</div>
-              <div class="swap-ui-swapmeta">${sGrams ? `${sGrams} g` : "portion"} • ${sCals ? `${sCals} kcal` : "kcal"}</div>
-            </div>
-            <button class="swap-ui-btn" type="button" data-action="replace" data-swap-index="${idx}">Replace</button>
-          </div>
-        `;
-      }).join("") : `<div class="swap-ui-muted">No swaps found for this item.</div>`}
-    </div>
-  `.trim();
+  const name = selectedFood.name || selectedFood.food_name || selectedFood.title || "Selected food";
+  if (hint) hint.textContent = `Swaps for: ${name}`;
+  if (intro) intro.style.display = "none";
+  results.innerHTML = "";
 }
 
-// -----------------------------
-// Recipes render (accordion)
-// -----------------------------
-export function renderRecipes(recipesObj) {
-  mountTemplate();
-  const mount = getRecipesMount();
-  if (!mount) return;
+function renderSwapResults(swapsLike, selectedFood) {
+  const results = document.getElementById("swapResults");
+  const intro = document.getElementById("swapIntro");
+  if (!results) return;
 
-  // Flexible shapes accepted
-  const days = [];
-  if (recipesObj && Array.isArray(recipesObj.days)) {
-    for (const d of recipesObj.days) days.push(d);
-  } else if (recipesObj && typeof recipesObj === "object") {
-    const keys = Object.keys(recipesObj).sort();
-    for (const date of keys) {
-      const v = recipesObj[date];
-      const meals = [];
-      if (v && typeof v === "object") {
-        for (const mk of Object.keys(v)) meals.push({ key: mk, label: mk, text: v[mk] });
-      }
-      days.push({ date, meals });
-    }
+  const swaps = (swapsLike && swapsLike.ok && swapsLike.swaps) ? swapsLike.swaps : swapsLike;
+  const list = Array.isArray(swaps) ? swaps : [];
+
+  if (intro) intro.style.display = selectedFood ? "none" : "";
+
+  if (!list.length) {
+    results.innerHTML = `<div class="muted">No swaps yet. Click a food item in the plan.</div>`;
+    return;
   }
+
+  results.innerHTML = list.map((s) => {
+    const id = s.id ?? s.foodId ?? "";
+    const name = s.name ?? s.title ?? "Swap";
+    const grams = s.grams ?? s.g ?? s.portion_g ?? "";
+    const kcal = s.calories ?? s.kcal ?? "";
+    const p = s.protein_g ?? "";
+    const c = s.carbs_g ?? "";
+    const f = s.fat_g ?? "";
+    const group = s.group ?? "";
+    const subgroup = s.subgroup ?? "";
+
+    const metaParts = [];
+    if (grams) metaParts.push(`${grams}g`);
+    if (p || c || f) metaParts.push(`P${p || 0} C${c || 0} F${f || 0}`);
+    const meta = metaParts.join(" • ");
+
+    return `
+      <div
+        class="swapRow"
+        role="button"
+        tabindex="0"
+        data-action="apply-swap"
+        data-swap-id="${esc_(id)}"
+        data-swap-name="${esc_(name)}"
+        data-swap-grams="${esc_(grams)}"
+        data-swap-calories="${esc_(kcal)}"
+        data-swap-protein_g="${esc_(p)}"
+        data-swap-carbs_g="${esc_(c)}"
+        data-swap-fat_g="${esc_(f)}"
+        data-swap-group="${esc_(group)}"
+        data-swap-subgroup="${esc_(subgroup)}"
+      >
+        <div>
+          <div class="swapName">${esc_(name)}</div>
+          <div class="swapMeta">${esc_(meta)}</div>
+        </div>
+        <div class="swapKcal">${kcal ? `${esc_(kcal)} kcal` : ""}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderFreeFoods(listLike) {
+  const box = document.getElementById("freeFoods");
+  if (!box) return;
+  const list = Array.isArray(listLike) ? listLike : [];
+  box.innerHTML = list.map((x) => {
+    const label = typeof x === "string" ? x : (x?.name || x?.label || "");
+    if (!label) return "";
+    return `<span class="foodPill" style="cursor:default;">${esc_(label)}</span>`;
+  }).join("");
+}
+
+function renderRecipes(recipesLike, planLike) {
+  const listEl = document.getElementById("recipesList");
+  if (!listEl) return;
+
+  // Normalize shapes:
+  // - {ok:true, recipes:{weekStart, days:[{date, items:[{title, body}]}]}}
+  // - {weekStart, days:[{date, recipes:[...]}]}
+  // - Array of day objects
+  let recipes = recipesLike;
+  if (recipes && recipes.ok && recipes.recipes) recipes = recipes.recipes;
+
+  const plan = normalizePlan_(planLike);
+  const weekStart = recipes?.weekStart || plan?.weekStart || null;
+
+  const days =
+    Array.isArray(recipes?.days) ? recipes.days :
+    Array.isArray(recipes) ? recipes :
+    Array.isArray(plan?.days) ? plan.days.map(d => ({ date: d.date, recipes: [] })) :
+    [];
 
   if (!days.length) {
-    mount.innerHTML = `<div class="swap-ui-muted">Recipes will appear here after generation.</div>`;
+    listEl.innerHTML = `<div class="muted">Recipes will appear here after generation.</div>`;
     return;
   }
 
-  mount.innerHTML = `
-    <div class="swap-ui-recipes">
-      ${days.map((day, idx) => {
-        const d = isoToDate(day.date) || new Date();
-        const title = `${fmtDow(d)} • ${day.date || fmtMD(d)}`;
-        const meals = Array.isArray(day.meals) ? day.meals : [];
+  listEl.innerHTML = days.map((d) => {
+    const date = d.date || d.day || null;
+    const title = date ? `${fmtDayName_(date)} • ${fmtShortDate_(date)}` : "Day";
+    const entries = Array.isArray(d.recipes) ? d.recipes
+                  : Array.isArray(d.items) ? d.items
+                  : Array.isArray(d.meals) ? d.meals
+                  : [];
 
-        const body = meals.length ? meals.map(m => {
-          const label = String(m.label || m.key || "Meal");
-          const text = String(m.text || m.recipe || m.recipeText || "").trim();
-          return `
-            <div class="swap-ui-recipeblock">
-              <div class="swap-ui-recipename">${label}</div>
-              <div class="swap-ui-recipetext">${text || "No recipe text yet."}</div>
-            </div>
-          `;
-        }).join("") : `<div class="swap-ui-muted">No recipes stored for this day yet.</div>`;
+    if (!entries.length) {
+      return `<div class="muted">${esc_(title)}<div class="muted">Recipes will appear here after generation.</div></div>`;
+    }
 
-        return `
-          <div class="swap-ui-acc" data-acc="${idx}">
-            <button type="button" class="swap-ui-accbtn" data-action="toggleAcc" data-acc="${idx}">
-              <div class="swap-ui-acctitle">${title}</div>
-              <div class="swap-ui-accsub">${meals.length ? `${meals.length} meals` : "No meals"}</div>
-            </button>
-            <div class="swap-ui-accbody">${body}</div>
-          </div>
-        `;
-      }).join("")}
-    </div>
-  `.trim();
+    const blocks = entries.map((r, idx) => {
+      const rTitle = r.title || r.name || r.label || `Recipe ${idx + 1}`;
+      const body = r.body || r.text || r.instructions || r.recipe || "";
+      return `
+        <details>
+          <summary>${esc_(rTitle)}</summary>
+          <div class="recipeBody">${esc_(body)}</div>
+        </details>
+      `;
+    }).join("");
 
-  const first = $(`.swap-ui-acc[data-acc="0"]`, mount);
-  if (first) first.classList.add("is-open");
+    return `
+      <div>
+        <div style="font-weight:1000; margin: 8px 0;">${esc_(title)}</div>
+        ${blocks}
+      </div>
+    `;
+  }).join("");
 }
 
-// -----------------------------
-// Wiring: click behavior for food → swaps, and replace button
-// NOTE: app.js likely already does some of this. This is safe + additive.
-// -----------------------------
-export function attachUIHandlers({ onFoodClick, onReplaceClick } = {}) {
-  // Avoid double-binding
-  if (attachUIHandlers._done) return;
-  attachUIHandlers._done = true;
-
-  document.addEventListener("click", (e) => {
-    const foodBtn = e.target.closest && e.target.closest(".swap-ui-food");
-    if (foodBtn) {
-      const dayIndex = Number(foodBtn.getAttribute("data-day-index"));
-      const mealKey = String(foodBtn.getAttribute("data-meal-key") || "");
-      const itemIndex = Number(foodBtn.getAttribute("data-item-index"));
-
-      const plan = state.plan || loadPlan();
-      const day = plan?.days?.[dayIndex];
-      if (!day) return;
-
-      const meal = (day.meals || []).find(m => normalizeMealKey(m.key || m.label) === mealKey);
-      const item = meal?.items?.[itemIndex];
-      if (!item) return;
-
-      state.plan = plan;
-      state.selected = { dayIndex, mealKey, itemIndex, item };
-      highlightSelected(state.selected);
-
-      if (typeof onFoodClick === "function") onFoodClick(state.selected);
-      return;
-    }
-
-    const rep = e.target.closest && e.target.closest('[data-action="replace"]');
-    if (rep) {
-      const idx = Number(rep.getAttribute("data-swap-index"));
-      if (typeof onReplaceClick === "function") onReplaceClick(idx);
-      return;
-    }
-
-    const acc = e.target.closest && e.target.closest('[data-action="toggleAcc"]');
-    if (acc) {
-      const id = acc.getAttribute("data-acc");
-      const box = document.querySelector(`.swap-ui-acc[data-acc="${id}"]`);
-      if (box) box.classList.toggle("is-open");
-    }
-  });
-}
-
-// -----------------------------
-// Boot safety
-// -----------------------------
-window.addEventListener("error", failOpen);
-window.addEventListener("unhandledrejection", failOpen);
-failOpen();
-injectStyles();
+/* -----------------------------
+   Exports (MUST match app.js)
+   ----------------------------- */
+export {
+  mountTemplate,
+  setStatus,
+  setTopbar,
+  renderCalendar,
+  renderSwapSidebar,
+  renderSwapResults,
+  renderFreeFoods,
+  renderRecipes
+};

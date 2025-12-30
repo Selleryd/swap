@@ -1,1206 +1,1067 @@
-// ui.js — SWAP UI Layer (calendar + swaps + recipes)
-// NOTE: app.js imports these named exports. If any are missing, the whole app goes blank.
+// ui.js — SWAP UI (calendar + swaps panel + recipes)
+// Must export the exact names that app.js imports.
 
-const UI_VERSION = "ui-3.2.0";
+import { Storage } from "./storage.js";
+import { API } from "./api.js";
 
-const GROUP_COLORS = {
-  protein: "#22c55e",
-  carb: "#8b5cf6",
-  fat: "#ef4444",
-  fruit: "#3b82f6",
-  vegetable: "#14b8a6",
-  free: "#0ea5e9",
-  other: "#64748b",
+const UI_STATE = {
+  plan: null,
+  profile: null,
+  selected: null, // { date, mealKey, itemIndex, item }
+  swapCache: new Map(), // key -> groups
+  recipes: null, // { [date]: recipeDay }
+  wired: false,
+  cssInjected: false,
 };
 
-function ensureInjectedStyles() {
-  if (document.getElementById("swap-ui-injected-styles")) return;
-  const style = document.createElement("style");
-  style.id = "swap-ui-injected-styles";
-  style.textContent = `
-/* ===== SWAP UI Injected Styles (${UI_VERSION}) ===== */
-:root{
-  --swap-bg: #f6f7fb;
-  --swap-card: rgba(255,255,255,.82);
-  --swap-border: rgba(15,23,42,.10);
-  --swap-text: #0f172a;
-  --swap-muted: rgba(15,23,42,.65);
-  --swap-shadow: 0 18px 50px rgba(2,6,23,.10);
-  --swap-radius: 22px;
-  --swap-radius-sm: 14px;
-  --swap-gap: 14px;
-  --swap-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+function $(sel, root = document) {
+  return root.querySelector(sel);
+}
+function $all(sel, root = document) {
+  return Array.from(root.querySelectorAll(sel));
 }
 
-.swap-shell{
-  font-family: var(--swap-font);
-  color: var(--swap-text);
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-.swap-shell .swap-layout{
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 18px;
-  min-height: 100vh;
-  padding: 18px;
-  background: radial-gradient(1200px 500px at 20% -10%, rgba(139,92,246,.18), transparent 55%),
-              radial-gradient(1200px 500px at 80% 0%, rgba(34,197,94,.14), transparent 55%),
-              var(--swap-bg);
+function fmtDateShort(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "numeric" });
+}
+function dayName(iso) {
+  if (!iso) return "";
+  const d = new Date(iso + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { weekday: "long" });
+}
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function round(n, digits = 0) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  const p = 10 ** digits;
+  return Math.round(x * p) / p;
 }
 
-@media (max-width: 980px){
-  .swap-shell .swap-layout{ grid-template-columns: 1fr; padding: 10px; }
-}
+function normalizeItem(raw) {
+  if (!raw) return null;
 
-.swap-card{
-  background: var(--swap-card);
-  border: 1px solid var(--swap-border);
-  border-radius: var(--swap-radius);
-  box-shadow: var(--swap-shadow);
-  backdrop-filter: blur(10px);
-}
+  // Plan item shapes we’ve seen:
+  // 1) { label, food_id, subgroup, swap_vector, grams, macros:{kcal,carbs_g,protein_g,fat_g...} }
+  // 2) { name, id, group, subgroup, grams, calories, protein_g, carbs_g, fat_g, portion }
+  const label = raw.label ?? raw.name ?? "";
+  const food_id = raw.food_id ?? raw.id ?? null;
 
-.swap-sidebar{
-  padding: 14px;
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  gap: 12px;
-}
+  const subgroup = raw.subgroup ?? raw.sub_group ?? "";
+  const group = raw.group ?? inferGroupFromSubgroup(subgroup) ?? "";
 
-.swap-brand{
-  display:flex; align-items:center; gap: 12px;
-  padding: 8px 10px;
-}
-.swap-logo{
-  width: 44px; height: 44px; border-radius: 14px;
-  background: rgba(255,255,255,.9);
-  border: 1px solid var(--swap-border);
-  display:flex; align-items:center; justify-content:center;
-  overflow:hidden;
-}
-.swap-brand h1{ font-size: 16px; margin:0; line-height:1.1; font-weight: 800; }
-.swap-brand p{ margin:2px 0 0 0; font-size: 12px; color: var(--swap-muted); font-weight: 600; }
+  const grams =
+    Number(raw.grams ?? raw.gram ?? 0) ||
+    parseFloat(String(raw.portion ?? "").replace(/[^\d.]/g, "")) ||
+    0;
 
-.swap-nav{
-  display:grid;
-  gap: 10px;
-  padding: 8px 6px;
-}
-.swap-nav button{
-  width:100%;
-  padding: 12px 12px;
-  border-radius: 14px;
-  border: 1px solid var(--swap-border);
-  background: rgba(255,255,255,.7);
-  font-weight: 800;
-  cursor:pointer;
-  text-align:left;
-  transition: transform .08s ease, background .12s ease;
-}
-.swap-nav button:hover{ transform: translateY(-1px); background: rgba(255,255,255,.92); }
-.swap-nav button.is-active{
-  background: rgba(139,92,246,.12);
-  border-color: rgba(139,92,246,.28);
-}
+  let macros = raw.macros ?? null;
 
-.swap-status{
-  padding: 12px;
-  border-radius: 16px;
-  border: 1px dashed rgba(15,23,42,.16);
-  background: rgba(255,255,255,.55);
-}
-.swap-status .line1{
-  font-weight: 800;
-  font-size: 12px;
-  color: rgba(15,23,42,.7);
-}
-.swap-status .line2{
-  font-weight: 900;
-  font-size: 13px;
-  margin-top: 6px;
-}
-
-.swap-status .actions{
-  display:flex;
-  gap:10px;
-  margin-top: 10px;
-}
-.swap-btn{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--swap-border);
-  background: rgba(255,255,255,.85);
-  font-weight: 900;
-  cursor:pointer;
-}
-.swap-btn.primary{
-  border-color: rgba(139,92,246,.25);
-  background: linear-gradient(135deg, rgba(139,92,246,.95), rgba(34,197,94,.90));
-  color: white;
-}
-.swap-btn:disabled{ opacity:.6; cursor:not-allowed; }
-
-.swap-main{
-  display:grid;
-  grid-template-rows: auto 1fr;
-  gap: 12px;
-}
-
-.swap-topbar{
-  padding: 10px 14px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-}
-.swap-topbar .title{
-  font-weight: 900;
-  font-size: 14px;
-  padding: 10px 14px;
-  border-radius: 16px;
-  border: 1px solid var(--swap-border);
-  background: rgba(255,255,255,.65);
-}
-.swap-topbar .stats{
-  font-weight: 900;
-  font-size: 13px;
-  color: rgba(15,23,42,.75);
-  padding: 10px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--swap-border);
-  background: rgba(255,255,255,.65);
-}
-
-.swap-pages{
-  padding: 0;
-  overflow: hidden;
-}
-
-.swap-page{
-  display:none;
-  padding: 14px;
-}
-.swap-page.is-active{ display:block; }
-
-.swap-section-title{
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap: 12px;
-}
-.swap-section-title h2{
-  margin: 0;
-  font-size: 26px;
-  letter-spacing:-.02em;
-}
-.swap-section-title .sub{
-  margin-top: 2px;
-  font-weight: 800;
-  color: rgba(15,23,42,.55);
-}
-
-.swap-controls{
-  display:flex;
-  gap: 10px;
-  align-items:center;
-  justify-content:flex-end;
-}
-
-.swap-legend{
-  display:flex;
-  gap: 12px;
-  align-items:center;
-  margin: 10px 0 12px;
-  color: rgba(15,23,42,.70);
-  font-weight: 800;
-  font-size: 12px;
-}
-.swap-dot{ width: 9px; height: 9px; border-radius: 50%; display:inline-block; margin-right:6px; }
-
-.swap-plan-layout{
-  display:grid;
-  grid-template-columns: 1.6fr 1fr;
-  gap: 14px;
-  align-items:start;
-}
-@media (max-width: 1100px){
-  .swap-plan-layout{ grid-template-columns: 1fr; }
-}
-
-.swap-calendar-card{
-  padding: 12px;
-  border-radius: var(--swap-radius);
-}
-.swap-calendar{
-  display:grid;
-  grid-template-columns: repeat(7, minmax(170px, 1fr));
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-@media (max-width: 980px){
-  .swap-calendar{
-    grid-template-columns: 1fr;
-    overflow-x: visible;
+  if (!macros) {
+    // Try to assemble from flat fields
+    const kcal = raw.calories ?? raw.kcal ?? 0;
+    const protein_g = raw.protein_g ?? raw.protein ?? 0;
+    const carbs_g = raw.carbs_g ?? raw.carbs ?? 0;
+    const fat_g = raw.fat_g ?? raw.fat ?? 0;
+    if ([kcal, protein_g, carbs_g, fat_g].some((v) => Number(v) > 0)) {
+      macros = { kcal: Number(kcal), protein_g: Number(protein_g), carbs_g: Number(carbs_g), fat_g: Number(fat_g) };
+    }
   }
+
+  const swap_vector = raw.swap_vector ?? raw.swapVec ?? raw.swapvec ?? null;
+
+  return {
+    raw,
+    label: String(label).trim(),
+    food_id,
+    subgroup: String(subgroup).trim(),
+    group: String(group).trim(),
+    grams: Number.isFinite(Number(grams)) ? Number(grams) : 0,
+    macros: macros || null,
+    swap_vector: swap_vector || null,
+  };
 }
 
-.swap-day{
-  border: 1px solid rgba(15,23,42,.10);
-  background: rgba(255,255,255,.70);
-  border-radius: 18px;
-  padding: 10px;
-  min-height: 520px;
-  display:flex;
-  flex-direction:column;
-}
-.swap-day .day-head{
-  display:flex;
-  align-items:baseline;
-  justify-content:space-between;
-  gap: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(15,23,42,.08);
-  margin-bottom: 8px;
-}
-.swap-day .dow{
-  font-weight: 950;
-  font-size: 15px;
-}
-.swap-day .date{
-  font-weight: 900;
-  font-size: 12px;
-  color: rgba(15,23,42,.55);
+function inferGroupFromSubgroup(subgroup) {
+  const s = String(subgroup || "").toLowerCase();
+  if (!s) return "";
+  if (s.includes("fruit")) return "fruit";
+  if (s.includes("fat") || s.includes("oil") || s.includes("nuts") || s.includes("avocado")) return "fat";
+  if (s.includes("protein") || s.includes("meat") || s.includes("poultry") || s.includes("fish") || s.includes("egg")) return "protein";
+  if (s.includes("grain") || s.includes("bread") || s.includes("pasta") || s.includes("rice") || s.includes("starch") || s.includes("starchy")) return "carb";
+  if (s.includes("veg") || s.includes("vegetable")) return "free";
+  return "";
 }
 
-.swap-meal{
-  margin-bottom: 10px;
-}
-.swap-meal .meal-name{
-  font-weight: 950;
-  font-size: 12px;
-  letter-spacing:.05em;
-  text-transform: uppercase;
-  color: rgba(15,23,42,.62);
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-.swap-items{
-  display:grid;
-  gap: 6px;
+function groupDotClass(item) {
+  // Keep your “legend” concept:
+  // carbs = purple, protein = green, fat = red, free foods = blue (matches your example doc legend style :contentReference[oaicite:1]{index=1})
+  const g = (item.group || "").toLowerCase();
+  const s = (item.subgroup || "").toLowerCase();
+
+  if (g === "carb" || g === "carbs" || s.includes("grain") || s.includes("starch") || s.includes("starchy")) return "swap-dot--carb";
+  if (g === "protein" || s.includes("protein") || s.includes("meat") || s.includes("poultry") || s.includes("fish") || s.includes("egg")) return "swap-dot--protein";
+  if (g === "fat" || s.includes("fat") || s.includes("oil") || s.includes("nuts") || s.includes("avocado")) return "swap-dot--fat";
+  if (g === "fruit" || s.includes("fruit")) return "swap-dot--carb"; // fruit shows with carb color in many exchange sheets; tweak later if you want separate
+  return "swap-dot--free";
 }
 
-.swap-food{
-  width:100%;
-  border: 1px solid rgba(15,23,42,.10);
-  background: rgba(255,255,255,.92);
-  border-radius: 14px;
-  padding: 8px 9px;
-  text-align:left;
-  cursor:pointer;
-  transition: transform .08s ease, box-shadow .10s ease, border-color .10s ease;
-  display:grid;
-  grid-template-columns: 10px 1fr auto;
-  gap: 10px;
-  align-items:center;
-}
-.swap-food:hover{
-  transform: translateY(-1px);
-  box-shadow: 0 10px 26px rgba(2,6,23,.10);
-  border-color: rgba(139,92,246,.25);
-}
-.swap-food .gdot{
-  width: 9px; height: 9px; border-radius: 999px;
-  background: rgba(100,116,139,.7);
-}
-.swap-food .name{
-  font-weight: 900;
-  font-size: 12px;
-  line-height: 1.2;
-  display:-webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow:hidden;
-}
-.swap-food .meta{
-  font-weight: 900;
-  font-size: 11px;
-  color: rgba(15,23,42,.55);
-  white-space:nowrap;
-}
+function ensureCSS() {
+  if (UI_STATE.cssInjected) return;
+  UI_STATE.cssInjected = true;
 
-.swap-side{
-  padding: 12px;
-  border-radius: var(--swap-radius);
-}
-.swap-side h3{
-  margin: 0;
-  font-size: 18px;
-  font-weight: 950;
-}
-.swap-side .hint{
-  margin-top: 2px;
-  font-weight: 800;
-  color: rgba(15,23,42,.60);
-  font-size: 12px;
-}
-.swap-panel{
-  margin-top: 10px;
-  border-top: 1px solid rgba(15,23,42,.08);
-  padding-top: 10px;
-}
-.swap-selected{
-  border: 1px dashed rgba(15,23,42,.16);
-  border-radius: 16px;
-  background: rgba(255,255,255,.68);
-  padding: 10px;
-}
-.swap-selected .t{
-  font-weight: 950;
-  font-size: 13px;
-}
-.swap-selected .s{
-  font-weight: 900;
-  font-size: 12px;
-  color: rgba(15,23,42,.60);
-  margin-top: 6px;
-}
+  const style = document.createElement("style");
+  style.id = "swap-ui-injected";
+  style.textContent = `
+    /* UI.js injected polish (safe, scoped) */
+    .swap-ui-wrap { display:flex; gap:18px; align-items:stretch; }
+    .swap-ui-main { flex:1; min-width: 0; }
+    .swap-ui-side { width: 420px; max-width: 42vw; min-width: 320px; }
+    @media (max-width: 1100px){
+      .swap-ui-wrap { flex-direction: column; }
+      .swap-ui-side { width:100%; max-width:none; min-width:0; }
+    }
 
-.swap-results{
-  margin-top: 10px;
-  display:grid;
-  gap: 8px;
-}
-.swap-result{
-  border: 1px solid rgba(15,23,42,.10);
-  background: rgba(255,255,255,.90);
-  border-radius: 16px;
-  padding: 10px;
-  display:grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  align-items:center;
-}
-.swap-result .n{
-  font-weight: 950;
-  font-size: 12px;
-  line-height: 1.2;
-}
-.swap-result .m{
-  margin-top: 6px;
-  font-weight: 900;
-  font-size: 11px;
-  color: rgba(15,23,42,.60);
-}
-.swap-result button{
-  padding: 10px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(139,92,246,.25);
-  background: rgba(139,92,246,.10);
-  font-weight: 950;
-  cursor:pointer;
-}
-.swap-result button:hover{
-  background: rgba(139,92,246,.16);
-}
+    .swap-week-head { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin: 6px 0 12px; }
+    .swap-week-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+    .swap-week-sub { color: rgba(0,0,0,0.55); font-weight: 600; margin-top: 2px; }
 
-.swap-freefoods{
-  margin-top: 12px;
-  border-top: 1px solid rgba(15,23,42,.08);
-  padding-top: 10px;
-}
-.swap-freefoods .title{
-  font-weight: 950;
-  font-size: 12px;
-  color: rgba(15,23,42,.70);
-  margin-bottom: 8px;
-}
-.swap-chips{
-  display:flex;
-  flex-wrap:wrap;
-  gap: 8px;
-}
-.swap-chip{
-  border: 1px solid rgba(59,130,246,.22);
-  background: rgba(59,130,246,.10);
-  color: rgba(30,64,175,.95);
-  font-weight: 950;
-  font-size: 11px;
-  padding: 7px 10px;
-  border-radius: 999px;
-}
+    .swap-legend { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin: 10px 0 14px; }
+    .swap-legend .swap-legend-item { display:flex; gap:8px; align-items:center; color: rgba(0,0,0,0.6); font-weight: 700; font-size: 12px; }
 
-/* Recipes */
-.swap-recipes{
-  display:grid;
-  gap: 10px;
-  margin-top: 12px;
-}
-.swap-day-accordion{
-  border: 1px solid rgba(15,23,42,.10);
-  border-radius: 18px;
-  background: rgba(255,255,255,.70);
-  overflow:hidden;
-}
-.swap-day-accordion summary{
-  cursor:pointer;
-  list-style:none;
-  padding: 12px 12px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 12px;
-  font-weight: 950;
-}
-.swap-day-accordion summary::-webkit-details-marker{ display:none; }
-.swap-day-accordion .meta{
-  font-weight: 900;
-  color: rgba(15,23,42,.55);
-  font-size: 12px;
-}
-.swap-recipe-body{
-  padding: 0 12px 12px 12px;
-  display:grid;
-  gap: 10px;
-}
-.swap-recipe-card{
-  border: 1px solid rgba(15,23,42,.10);
-  border-radius: 16px;
-  background: rgba(255,255,255,.92);
-  padding: 10px;
-}
-.swap-recipe-card .hdr{
-  display:flex;
-  align-items:baseline;
-  justify-content:space-between;
-  gap: 10px;
-}
-.swap-recipe-card .meal{
-  font-weight: 950;
-  font-size: 12px;
-  letter-spacing:.06em;
-  text-transform: uppercase;
-  color: rgba(15,23,42,.65);
-}
-.swap-recipe-card .name{
-  font-weight: 950;
-  font-size: 14px;
-  margin-top: 6px;
-}
-.swap-recipe-card .small{
-  margin-top: 6px;
-  font-weight: 850;
-  font-size: 12px;
-  color: rgba(15,23,42,.60);
-}
-.swap-recipe-card details{
-  margin-top: 8px;
-}
-.swap-recipe-card details summary{
-  cursor:pointer;
-  font-weight: 950;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(15,23,42,.10);
-  background: rgba(255,255,255,.75);
-  display:inline-flex;
-}
-.swap-recipe-card .content{
-  margin-top: 8px;
-  color: rgba(15,23,42,.78);
-  font-weight: 800;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
+    .swap-dot { width:10px; height:10px; border-radius: 999px; display:inline-block; }
+    .swap-dot--carb { background: #7c3aed; }    /* purple */
+    .swap-dot--protein { background: #16a34a; } /* green */
+    .swap-dot--fat { background: #ef4444; }     /* red */
+    .swap-dot--free { background: #2563eb; }    /* blue */
 
-/* Splash */
-.swap-splash{
-  min-height: 100vh;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  padding: 18px;
-  background: radial-gradient(1200px 600px at 50% -10%, rgba(139,92,246,.22), transparent 60%),
-              radial-gradient(1000px 500px at 20% 0%, rgba(34,197,94,.18), transparent 60%),
-              var(--swap-bg);
-}
-.swap-splash .box{
-  width:min(980px, 100%);
-  padding: 18px;
-  border-radius: 28px;
-}
-.swap-splash .inner{
-  padding: 20px;
-  border-radius: 22px;
-}
-.swap-splash h2{
-  margin: 0;
-  font-size: 36px;
-  letter-spacing:-.03em;
-}
-.swap-splash p{
-  margin: 10px 0 0 0;
-  color: rgba(15,23,42,.65);
-  font-weight: 850;
-}
-.swap-splash .cta{
-  margin-top: 16px;
-}
-`;
+    .swap-calendar { display:flex; gap:14px; overflow:auto; padding: 6px 2px 10px; scroll-snap-type: x proximity; }
+    .swap-day { min-width: 280px; max-width: 320px; scroll-snap-align: start; border-radius: 18px; border: 1px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.85); box-shadow: 0 10px 25px rgba(0,0,0,0.06); padding: 12px; }
+    .swap-day-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.06); }
+    .swap-day-name { font-weight: 900; font-size: 16px; }
+    .swap-day-date { font-weight: 800; color: rgba(0,0,0,0.45); font-size: 13px; }
+
+    .swap-meal { margin-top: 10px; }
+    .swap-meal-title { font-size: 12px; font-weight: 900; letter-spacing: 0.08em; color: rgba(0,0,0,0.45); margin: 10px 0 6px; }
+    .swap-items { display:flex; flex-direction:column; gap:8px; }
+
+    .swap-item-btn { width:100%; border:1px solid rgba(0,0,0,0.10); background: rgba(255,255,255,0.95); border-radius: 14px; padding: 10px 10px; text-align:left; cursor:pointer; display:flex; gap:10px; align-items:flex-start; transition: transform .06s ease, box-shadow .12s ease, border-color .12s ease; }
+    .swap-item-btn:hover { box-shadow: 0 10px 18px rgba(0,0,0,0.08); border-color: rgba(0,0,0,0.18); }
+    .swap-item-btn:active { transform: translateY(1px); }
+    .swap-item-btn.is-selected { outline: 3px solid rgba(124,58,237,0.18); border-color: rgba(124,58,237,0.35); }
+
+    .swap-item-main { flex:1; min-width: 0; }
+    .swap-item-title { font-weight: 900; font-size: 13px; line-height: 1.15; }
+    .swap-item-sub { margin-top: 3px; color: rgba(0,0,0,0.55); font-weight: 700; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .swap-item-meta { margin-top: 6px; color: rgba(0,0,0,0.45); font-weight: 800; font-size: 11px; display:flex; gap:10px; flex-wrap:wrap; }
+    .swap-item-right { color: rgba(0,0,0,0.55); font-weight: 900; font-size: 12px; white-space: nowrap; }
+
+    .swap-panel { border-radius: 18px; border: 1px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.85); box-shadow: 0 10px 25px rgba(0,0,0,0.06); padding: 14px; }
+    .swap-panel h3 { margin: 0; font-size: 18px; font-weight: 900; }
+    .swap-panel .sub { margin-top: 4px; color: rgba(0,0,0,0.55); font-weight: 700; }
+
+    .swap-selected { margin-top: 12px; padding: 10px; border-radius: 14px; border: 1px dashed rgba(0,0,0,0.18); background: rgba(0,0,0,0.02); }
+    .swap-selected .name { font-weight: 900; }
+    .swap-selected .meta { margin-top: 6px; display:flex; gap:10px; flex-wrap:wrap; color: rgba(0,0,0,0.55); font-weight: 800; font-size: 12px; }
+
+    .swap-groups { margin-top: 12px; display:flex; flex-direction:column; gap:10px; }
+    .swap-group { border:1px solid rgba(0,0,0,0.08); border-radius: 14px; overflow:hidden; background: rgba(255,255,255,0.75); }
+    .swap-group-head { padding: 10px 12px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none; }
+    .swap-group-head .t { font-weight: 900; }
+    .swap-group-body { padding: 10px 12px; display:flex; flex-direction:column; gap:10px; }
+
+    .swap-sug { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .swap-sug .left { flex:1; min-width:0; }
+    .swap-sug .nm { font-weight: 900; font-size: 13px; }
+    .swap-sug .mm { margin-top: 4px; color: rgba(0,0,0,0.55); font-weight: 800; font-size: 12px; display:flex; gap:10px; flex-wrap:wrap; }
+    .swap-sug .btn { border: 1px solid rgba(0,0,0,0.14); background: white; border-radius: 12px; padding: 8px 10px; font-weight: 900; cursor:pointer; }
+    .swap-sug .btn:hover { box-shadow: 0 10px 18px rgba(0,0,0,0.08); }
+
+    .swap-status-pill { position: fixed; left: 16px; bottom: 16px; z-index: 9999; background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.12); border-radius: 999px; padding: 10px 14px; box-shadow: 0 12px 30px rgba(0,0,0,0.12); font-weight: 900; color: rgba(0,0,0,0.72); display:none; }
+    .swap-status-pill.show { display:inline-flex; align-items:center; gap:10px; }
+    .swap-spinner { width: 12px; height: 12px; border-radius: 999px; border: 2px solid rgba(0,0,0,0.18); border-top-color: rgba(0,0,0,0.55); animation: swapspin .8s linear infinite; }
+    @keyframes swapspin { to { transform: rotate(360deg); } }
+
+    /* Recipes */
+    .swap-recipes { display:flex; flex-direction:column; gap:12px; }
+    .swap-rec-day { border: 1px solid rgba(0,0,0,0.08); border-radius: 16px; background: rgba(255,255,255,0.85); overflow:hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); }
+    .swap-rec-day-head { padding: 12px 14px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none; }
+    .swap-rec-day-head .d { font-weight: 900; }
+    .swap-rec-day-body { padding: 12px 14px; display:flex; flex-direction:column; gap:14px; }
+    .swap-rec-meal { border-top: 1px solid rgba(0,0,0,0.06); padding-top: 12px; }
+    .swap-rec-meal:first-child { border-top: none; padding-top: 0; }
+    .swap-rec-meal .h { font-weight: 900; font-size: 14px; }
+    .swap-rec-meal .s { margin-top: 6px; color: rgba(0,0,0,0.62); font-weight: 700; }
+    .swap-rec-cols { margin-top: 10px; display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 900px){ .swap-rec-cols { grid-template-columns: 1fr; } }
+    .swap-rec-box { border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; background: rgba(0,0,0,0.02); padding: 10px 12px; }
+    .swap-rec-box .t { font-weight: 900; margin-bottom: 8px; }
+    .swap-rec-box ol { margin: 0; padding-left: 18px; }
+    .swap-rec-box li { margin: 6px 0; font-weight: 700; color: rgba(0,0,0,0.65); }
+  `;
   document.head.appendChild(style);
 }
 
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
-function safeDate(d) {
-  try {
-    const dt = new Date(d);
-    if (Number.isNaN(dt.getTime())) return null;
-    return dt;
-  } catch {
-    return null;
+function ensureStatusPill() {
+  let pill = $("#swapStatusPill");
+  if (!pill) {
+    pill = document.createElement("div");
+    pill.id = "swapStatusPill";
+    pill.className = "swap-status-pill";
+    pill.innerHTML = `<span class="swap-spinner" aria-hidden="true"></span><span class="txt"></span>`;
+    document.body.appendChild(pill);
   }
+  return pill;
 }
 
-function dayNameShort(dateStr) {
-  const dt = safeDate(dateStr);
-  if (!dt) return "";
-  return dt.toLocaleDateString(undefined, { weekday: "long" });
+export function setStatus(text, opts = {}) {
+  ensureCSS();
+  const pill = ensureStatusPill();
+  const t = String(text || "").trim();
+  const show = opts.show ?? Boolean(t);
+  $(".txt", pill).textContent = t || "…";
+  pill.classList.toggle("show", Boolean(show));
+  pill.querySelector(".swap-spinner").style.display = opts.spin === false ? "none" : "inline-block";
 }
 
-function dateShort(dateStr) {
-  const dt = safeDate(dateStr);
-  if (!dt) return "";
-  return dt.toLocaleDateString(undefined, { month: "numeric", day: "numeric", year: "numeric" });
-}
+export function mountTemplate(rootEl, templateId) {
+  ensureCSS();
 
-function normalizePlan(input) {
-  if (!input) return null;
-  const plan = input.plan ? input.plan : input;
-  if (!plan) return null;
+  const root = typeof rootEl === "string" ? document.querySelector(rootEl) : rootEl;
+  if (!root) throw new Error("mountTemplate: root element not found");
 
-  const days = Array.isArray(plan.days) ? plan.days : [];
-  const weekStart = plan.weekStart || (days[0]?.date ?? "");
-  const totals = plan.totals || plan.targets || null;
+  const tpl = document.getElementById(templateId);
+  root.innerHTML = "";
 
-  return { ...plan, weekStart, days, totals };
-}
-
-function normalizeRecipes(input) {
-  if (!input) return null;
-  const r = input.recipes ? input.recipes : input;
-
-  // Accept many shapes:
-  // 1) { days:[{date, meals:{breakfast:{title, ...}}}] }
-  // 2) { "2025-12-27": { breakfast:{...}, lunch:{...} } }
-  // 3) [ {date, ...} ]
-  // 4) string/markdown
-
-  if (typeof r === "string") return { kind: "text", text: r };
-
-  if (Array.isArray(r)) return { kind: "daysArray", days: r };
-
-  if (r && Array.isArray(r.days)) return { kind: "daysArray", days: r.days };
-
-  if (r && typeof r === "object") return { kind: "byDate", byDate: r };
-
-  return null;
-}
-
-function getRoot() {
-  return document.getElementById("app") || document.body;
-}
-
-function q(id) {
-  return document.getElementById(id);
-}
-
-/* =========================
-   Templates
-========================= */
-
-const TEMPLATES = {
-  tplSplash: `
-    <div class="swap-splash">
-      <div class="swap-card box">
-        <div class="swap-card inner">
-          <div class="swap-brand" style="padding:0; margin-bottom:14px;">
-            <div class="swap-logo" aria-hidden="true">
-              <span style="font-weight:950; font-size:13px;">SWAP</span>
-            </div>
+  if (tpl && tpl.content) {
+    root.appendChild(tpl.content.cloneNode(true));
+  } else {
+    // Safe fallback (shouldn’t be used if your index.html templates exist)
+    root.innerHTML = `
+      <div class="swap-ui-wrap" style="padding:18px;">
+        <div class="swap-ui-main">
+          <div class="swap-week-head">
             <div>
-              <h1>SWAP</h1>
-              <p>Switch With Any Portion</p>
+              <div class="swap-week-title">Week Plan</div>
+              <div class="swap-week-sub" data-ui="weekSub">—</div>
+            </div>
+            <div style="display:flex; gap:10px;">
+              <button data-action="generate-plan">Generate</button>
+              <button data-action="regenerate-plan">Regenerate</button>
             </div>
           </div>
-
-          <h2>Build a week plan you can actually follow.</h2>
-          <p>Generate a structured weekly plan. Click any item to swap with an equivalent option (same subgroup first), keeping calories and macros within your allowed margin.</p>
-
-          <div class="cta">
-            <button class="swap-btn primary" data-action="go-intake">Enter now</button>
+          <div data-ui="calendarHost"></div>
+        </div>
+        <div class="swap-ui-side">
+          <div class="swap-panel">
+            <h3>Swaps</h3>
+            <div class="sub">Click a food item to see equivalent swaps.</div>
+            <div data-ui="swapsHost"></div>
+          </div>
+          <div style="height:14px;"></div>
+          <div class="swap-panel">
+            <h3>Free Foods</h3>
+            <div class="sub">Extra hunger helpers</div>
+            <div data-ui="freeFoodsHost"></div>
           </div>
         </div>
       </div>
-    </div>
-  `,
-
-  tplShell: `
-    <div class="swap-shell">
-      <div class="swap-layout">
-        <!-- Sidebar -->
-        <aside class="swap-card swap-sidebar">
-          <div class="swap-brand">
-            <div class="swap-logo">
-              <span style="font-weight:950; font-size:13px;">SWAP</span>
-            </div>
-            <div>
-              <h1>SWAP</h1>
-              <p>Switch With Any Portion</p>
-            </div>
-          </div>
-
-          <nav class="swap-nav" aria-label="Primary">
-            <button class="is-active" data-action="tab-plan" data-tab="plan">Meal Plan</button>
-            <button data-action="tab-recipes" data-tab="recipes">Recipes</button>
-            <button data-action="tab-profile" data-tab="profile">Profile</button>
-          </nav>
-
-          <div></div>
-
-          <div class="swap-status">
-            <div class="line1" id="statusHint">Status</div>
-            <div class="line2" id="statusText">Ready</div>
-            <div class="actions">
-              <button class="swap-btn" data-action="reset">Reset</button>
-            </div>
-          </div>
-        </aside>
-
-        <!-- Main -->
-        <main class="swap-main">
-          <header class="swap-card swap-topbar">
-            <div class="title" id="topbarTitle">Meal Plan</div>
-            <div class="stats" id="topbarStats">—</div>
-          </header>
-
-          <section class="swap-card swap-pages">
-            <!-- Plan -->
-            <div class="swap-page is-active" id="page-plan" data-page="plan">
-              <div class="swap-section-title">
-                <div>
-                  <h2>Week Plan</h2>
-                  <div class="sub" id="weekLabel">—</div>
-                </div>
-                <div class="swap-controls">
-                  <button class="swap-btn primary" data-action="generate-plan">Generate</button>
-                  <button class="swap-btn" data-action="regenerate-plan">Regenerate</button>
-                </div>
-              </div>
-
-              <div class="swap-legend" aria-label="Legend">
-                <span><span class="swap-dot" style="background:${GROUP_COLORS.carb}"></span>Carbs</span>
-                <span><span class="swap-dot" style="background:${GROUP_COLORS.protein}"></span>Protein</span>
-                <span><span class="swap-dot" style="background:${GROUP_COLORS.fat}"></span>Fat</span>
-                <span><span class="swap-dot" style="background:${GROUP_COLORS.fruit}"></span>Free foods</span>
-              </div>
-
-              <div class="swap-plan-layout">
-                <div class="swap-card swap-calendar-card">
-                  <div class="swap-calendar" id="calendar"></div>
-                </div>
-
-                <aside class="swap-card swap-side">
-                  <h3>Swaps</h3>
-                  <div class="hint">Click a food item to see equivalent swaps.</div>
-
-                  <div class="swap-panel">
-                    <div class="swap-selected" id="swapsHeader"></div>
-                    <div class="swap-results" id="swapsList"></div>
-
-                    <div class="swap-freefoods">
-                      <div class="title">Free Foods (extra hunger)</div>
-                      <div class="swap-chips" id="freeFoods"></div>
-                    </div>
-                  </div>
-                </aside>
-              </div>
-            </div>
-
-            <!-- Recipes -->
-            <div class="swap-page" id="page-recipes" data-page="recipes">
-              <div class="swap-section-title">
-                <div>
-                  <h2>Recipes</h2>
-                  <div class="sub">Recipes generate when you request them. They’re stored (in your browser) so you don’t lose them.</div>
-                </div>
-                <div class="swap-controls">
-                  <button class="swap-btn primary" data-action="generate-recipes">Generate recipes for this week</button>
-                </div>
-              </div>
-
-              <div class="swap-recipes" id="recipesList"></div>
-            </div>
-
-            <!-- Profile -->
-            <div class="swap-page" id="page-profile" data-page="profile">
-              <div class="swap-section-title">
-                <div>
-                  <h2>Profile</h2>
-                  <div class="sub">Update your intake and targets.</div>
-                </div>
-              </div>
-              <div style="padding:14px; color: rgba(15,23,42,.65); font-weight:850;">
-                Profile UI is handled by your existing app logic. (This template just provides the stable container.)
-              </div>
-            </div>
-          </section>
-        </main>
-      </div>
-    </div>
-  `,
-};
-
-/* =========================
-   Exported API (what app.js imports)
-========================= */
-
-export function mountTemplate(rootEl, templateId) {
-  ensureInjectedStyles();
-
-  const root = rootEl || getRoot();
-
-  // Support existing <template id="..."> in index.html if present
-  const tplNode = document.getElementById(templateId);
-  if (tplNode && tplNode.content) {
-    root.replaceChildren(tplNode.content.cloneNode(true));
-    return;
+    `;
   }
 
-  const html = TEMPLATES[templateId];
-  if (!html) {
-    root.innerHTML = `<div style="padding:18px;font-family:${UI_VERSION};">
-      <b>UI Error:</b> Missing template <code>${templateId}</code>
-    </div>`;
-    return;
-  }
-
-  root.innerHTML = html;
-
-  // Initialize swaps header default state to avoid empty weirdness
-  renderSwapsHeader(null);
+  wireOnce(root);
 }
 
-export function setStatus(text, mode = "normal") {
-  const hint = q("statusHint");
-  const node = q("statusText");
-  if (!node) return;
+export function setTopbar(arg1, arg2) {
+  // Flexible: setTopbar("Meal Plan") or setTopbar({title, subtitle})
+  const data = typeof arg1 === "object" ? arg1 : { title: arg1, subtitle: arg2 };
+  const title = data?.title != null ? String(data.title) : "";
+  const subtitle = data?.subtitle != null ? String(data.subtitle) : "";
 
-  if (hint) {
-    hint.textContent = mode === "error" ? "Error" : mode === "working" ? "Working" : "Status";
-  }
-  node.textContent = text || "Ready";
+  const titleEl =
+    document.querySelector('[data-ui="pageTitle"]') ||
+    document.querySelector('[data-role="page-title"]') ||
+    document.querySelector(".page-title");
+
+  if (titleEl && title) titleEl.textContent = title;
+
+  const subEl =
+    document.querySelector('[data-ui="pageSub"]') ||
+    document.querySelector('[data-role="page-subtitle"]') ||
+    document.querySelector(".page-subtitle");
+
+  if (subEl) subEl.textContent = subtitle || "";
 }
 
-export function setTopbar(titleOrObj, maybeStatsObj) {
-  const titleNode = q("topbarTitle");
-  const statsNode = q("topbarStats");
+function getProfileSafe() {
+  try {
+    const p = Storage?.getProfile?.() ?? null;
+    if (p) return p;
+  } catch (_) {}
+  return UI_STATE.profile;
+}
 
-  let title = "Meal Plan";
-  let stats = null;
+function setProfileCache() {
+  UI_STATE.profile = getProfileSafe();
+}
 
-  if (typeof titleOrObj === "string") {
-    title = titleOrObj;
-    stats = maybeStatsObj || null;
-  } else if (titleOrObj && typeof titleOrObj === "object") {
-    title = titleOrObj.title || title;
-    stats = titleOrObj.stats || titleOrObj;
-  }
+function findCalendarHost() {
+  return (
+    document.querySelector('[data-ui="calendarHost"]') ||
+    document.querySelector('[data-region="calendar"]') ||
+    document.querySelector("#calendar") ||
+    document.querySelector("#planCalendar") ||
+    document.querySelector("#weekCalendar") ||
+    document.querySelector('[data-view="plan"] [data-ui="body"]') ||
+    null
+  );
+}
 
-  if (titleNode) titleNode.textContent = title;
+function findSwapsHost() {
+  return (
+    document.querySelector('[data-ui="swapsHost"]') ||
+    document.querySelector('[data-region="swaps"]') ||
+    document.querySelector("#swapsPanel") ||
+    document.querySelector("#swapPanel") ||
+    document.querySelector("#swaps") ||
+    null
+  );
+}
 
-  // stats: {kcalPerDay, proteinPerDay} or {kcal, protein}
-  if (statsNode) {
-    const kcal = stats?.kcalPerDay ?? stats?.kcal ?? stats?.calories ?? null;
-    const protein = stats?.proteinPerDay ?? stats?.protein ?? stats?.protein_g ?? null;
+function findFreeFoodsHost() {
+  return (
+    document.querySelector('[data-ui="freeFoodsHost"]') ||
+    document.querySelector('[data-region="freefoods"]') ||
+    document.querySelector("#freeFoods") ||
+    document.querySelector("#freefoods") ||
+    null
+  );
+}
 
-    if (kcal || protein) {
-      const kcalTxt = kcal ? `${Math.round(Number(kcal))} kcal/day` : "";
-      const pTxt = protein ? `≥${Math.round(Number(protein))}g protein/day` : "";
-      statsNode.textContent = [kcalTxt, pTxt].filter(Boolean).join(" • ");
-    } else {
-      statsNode.textContent = "—";
+function findRecipesHost() {
+  return (
+    document.querySelector('[data-ui="recipesHost"]') ||
+    document.querySelector('[data-region="recipes"]') ||
+    document.querySelector("#recipes") ||
+    document.querySelector("#recipesPanel") ||
+    null
+  );
+}
+
+function wireOnce(root) {
+  if (UI_STATE.wired) return;
+  UI_STATE.wired = true;
+
+  // Make sure buttons show feedback even if app.js does the actual work.
+  document.addEventListener("click", (e) => {
+    const btn = e.target?.closest?.("[data-action]");
+    if (!btn) return;
+    const action = btn.getAttribute("data-action");
+    if (!action) return;
+
+    if (action === "generate-plan" || action === "regenerate-plan") {
+      setStatus(action === "generate-plan" ? "Generating plan…" : "Regenerating plan…", { show: true });
+      // app.js should call renderCalendar when finished; we’ll auto clear then.
     }
-  }
+
+    if (action === "generate-recipes") {
+      setStatus("Generating recipes…", { show: true });
+      // We also provide a fallback generator if app.js doesn’t.
+      maybeGenerateRecipesFallback().catch(() => {});
+    }
+  });
+
+  // Calendar item click delegation
+  document.addEventListener("click", (e) => {
+    const itemBtn = e.target?.closest?.("[data-swap-item]");
+    if (!itemBtn) return;
+
+    const payload = itemBtn.getAttribute("data-swap-item");
+    if (!payload) return;
+
+    try {
+      const meta = JSON.parse(payload);
+      handlePickItem(meta, itemBtn).catch((err) => {
+        setStatus(String(err?.message || err || "Swap load failed"), { show: true, spin: false });
+        setTimeout(() => setStatus("", { show: false }), 1800);
+      });
+    } catch (_) {}
+  });
+
+  // Apply swap delegation
+  document.addEventListener("click", (e) => {
+    const btn = e.target?.closest?.("[data-apply-swap]");
+    if (!btn) return;
+    const raw = btn.getAttribute("data-apply-swap");
+    if (!raw) return;
+
+    try {
+      const data = JSON.parse(raw); // { to, at }
+      applySwapLocal(data).catch((err) => {
+        setStatus(String(err?.message || err || "Could not apply swap"), { show: true, spin: false });
+        setTimeout(() => setStatus("", { show: false }), 1800);
+      });
+    } catch (_) {}
+  });
+
+  // Accordion toggles
+  document.addEventListener("click", (e) => {
+    const head = e.target?.closest?.("[data-acc-head]");
+    if (!head) return;
+    const body = head.parentElement?.querySelector?.("[data-acc-body]");
+    if (!body) return;
+    const open = body.getAttribute("data-open") !== "true";
+    body.setAttribute("data-open", open ? "true" : "false");
+    body.style.display = open ? "flex" : "none";
+  });
+
+  // Recipe day accordion
+  document.addEventListener("click", (e) => {
+    const head = e.target?.closest?.("[data-rec-day-head]");
+    if (!head) return;
+    const body = head.parentElement?.querySelector?.("[data-rec-day-body]");
+    if (!body) return;
+    const open = body.getAttribute("data-open") !== "true";
+    body.setAttribute("data-open", open ? "true" : "false");
+    body.style.display = open ? "flex" : "none";
+  });
 }
 
-export function renderCalendar(planInput) {
-  const plan = normalizePlan(planInput);
-  const cal = q("calendar");
-  const weekLabel = q("weekLabel");
-  if (!cal) return;
+function renderLegend() {
+  return `
+    <div class="swap-legend">
+      <div class="swap-legend-item"><span class="swap-dot swap-dot--carb"></span> Carbs</div>
+      <div class="swap-legend-item"><span class="swap-dot swap-dot--protein"></span> Protein</div>
+      <div class="swap-legend-item"><span class="swap-dot swap-dot--fat"></span> Fat</div>
+      <div class="swap-legend-item"><span class="swap-dot swap-dot--free"></span> Free foods</div>
+    </div>
+  `;
+}
 
-  cal.innerHTML = "";
+function renderItemButton(item, meta) {
+  const nm = escapeHtml(item.label || "Unknown");
+  const sub = escapeHtml(item.subgroup || item.group || "");
+  const grams = item.grams ? `${round(item.grams, 0)}g` : "";
+
+  let kcal = "";
+  if (item.macros?.kcal != null && Number(item.macros.kcal) > 0) kcal = `${round(item.macros.kcal, 0)} kcal`;
+
+  const dotClass = groupDotClass(item);
+
+  const metaJson = escapeHtml(JSON.stringify(meta));
+
+  return `
+    <button class="swap-item-btn" data-swap-item="${metaJson}" title="${nm}">
+      <span class="swap-dot ${dotClass}" style="margin-top:4px;"></span>
+      <span class="swap-item-main">
+        <div class="swap-item-title">${nm}</div>
+        ${sub ? `<div class="swap-item-sub">${sub}</div>` : ``}
+        <div class="swap-item-meta">
+          ${grams ? `<span>${grams}</span>` : ``}
+          ${kcal ? `<span>${kcal}</span>` : ``}
+        </div>
+      </span>
+      <span class="swap-item-right">Swap</span>
+    </button>
+  `;
+}
+
+function mealLabel(mealKey) {
+  const m = String(mealKey || "");
+  if (m === "snack_am") return "Snack (AM)";
+  if (m === "snack_pm") return "Snack (PM)";
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
+
+function getMealsInOrder(mealsObj) {
+  const order = ["breakfast", "snack_am", "lunch", "snack_pm", "dinner"];
+  const keys = Object.keys(mealsObj || {});
+  return order.filter((k) => keys.includes(k));
+}
+
+function normalizePlan(plan) {
+  if (!plan) return null;
+
+  // plan could be { weekStart, days:[{date, meals:{...}}] } or other
+  const days = Array.isArray(plan.days) ? plan.days : [];
+  const weekStart = plan.weekStart ?? plan.week_start ?? (days[0]?.date ?? "");
+
+  const out = { ...plan, weekStart, days };
+  return out;
+}
+
+export function renderCalendar(planArg, opts = {}) {
+  ensureCSS();
+  setProfileCache();
+
+  const plan = normalizePlan(planArg);
+  UI_STATE.plan = plan;
+
+  const host = findCalendarHost();
+  if (!host) return;
 
   if (!plan || !Array.isArray(plan.days) || plan.days.length === 0) {
-    cal.appendChild(el("div", "", "No plan yet. Click Generate."));
-    if (weekLabel) weekLabel.textContent = "—";
+    host.innerHTML = `
+      <div class="swap-week-head">
+        <div>
+          <div class="swap-week-title">Week Plan</div>
+          <div class="swap-week-sub">No plan yet. Click Generate.</div>
+        </div>
+      </div>
+    `;
+    setStatus("", { show: false });
     return;
   }
 
-  // Week label
-  if (weekLabel) weekLabel.textContent = `Week of ${dateShort(plan.weekStart || plan.days[0]?.date)}`;
+  const weekLabel =
+    plan.days?.[0]?.date
+      ? `Week of ${fmtDateShort(plan.days[0].date)}`
+      : (plan.weekStart ? `Week of ${fmtDateShort(plan.weekStart)}` : "—");
 
-  const frag = document.createDocumentFragment();
+  // Try to update any existing header subtitle in your template
+  const subEl = document.querySelector('[data-ui="weekSub"]');
+  if (subEl) subEl.textContent = weekLabel;
 
-  for (const day of plan.days) {
-    const col = el("div", "swap-day");
-    const head = el("div", "day-head");
-    head.appendChild(el("div", "dow", dayNameShort(day.date) || "Day"));
-    head.appendChild(el("div", "date", dateShort(day.date) || ""));
-    col.appendChild(head);
+  const daysHtml = plan.days
+    .map((day, dayIndex) => {
+      const date = day.date ?? "";
+      const meals = day.meals ?? {};
+      const keys = getMealsInOrder(meals);
 
-    const meals = Array.isArray(day.meals) ? day.meals : [];
-    for (const meal of meals) {
-      const mealWrap = el("div", "swap-meal");
-      const mealName = el("div", "meal-name", meal.label || meal.key || "Meal");
-      mealWrap.appendChild(mealName);
+      const mealsHtml = keys
+        .map((mealKey) => {
+          const meal = meals[mealKey] ?? {};
+          const items = Array.isArray(meal.items) ? meal.items : [];
 
-      const itemsWrap = el("div", "swap-items");
-      const items = Array.isArray(meal.items) ? meal.items : [];
+          const itemsHtml = items
+            .map((rawItem, itemIndex) => {
+              const item = normalizeItem(rawItem);
+              if (!item || !item.label) return "";
+              const meta = { date, dayIndex, mealKey, itemIndex };
+              return renderItemButton(item, meta);
+            })
+            .join("");
 
-      if (items.length === 0) {
-        const empty = el("div", "");
-        empty.style.color = "rgba(15,23,42,.45)";
-        empty.style.fontWeight = "850";
-        empty.style.fontSize = "12px";
-        empty.textContent = "—";
-        itemsWrap.appendChild(empty);
-      } else {
-        for (const item of items) {
-          const btn = el("button", "swap-food");
-          btn.type = "button";
+          return `
+            <div class="swap-meal">
+              <div class="swap-meal-title">${escapeHtml(mealLabel(mealKey))}</div>
+              <div class="swap-items">${itemsHtml || `<div style="color:rgba(0,0,0,0.45);font-weight:800;font-size:12px;">—</div>`}</div>
+            </div>
+          `;
+        })
+        .join("");
 
-          // Robust dataset so your existing app.js handler can pick up whatever it expects.
-          // (We include multiple aliases: id/foodId, portion/grams, group/subgroup, etc.)
-          btn.dataset.action = "pick-food";
-          btn.dataset.pick = "food";
-          btn.dataset.id = item.id ?? "";
-          btn.dataset.foodId = item.id ?? "";
-          btn.dataset.name = item.name ?? "";
-          btn.dataset.group = item.group ?? "";
-          btn.dataset.subgroup = item.subgroup ?? "";
-          btn.dataset.grams = String(item.grams ?? item.portion_g ?? item.portion ?? "");
-          btn.dataset.portion = String(item.portion ?? item.grams ?? "");
-          btn.dataset.calories = String(item.calories ?? "");
-          btn.dataset.protein = String(item.protein_g ?? "");
-          btn.dataset.carbs = String(item.carbs_g ?? "");
-          btn.dataset.fat = String(item.fat_g ?? "");
-          btn.dataset.day = day.date ?? "";
-          btn.dataset.meal = meal.key ?? meal.label ?? "";
+      return `
+        <section class="swap-day" data-day="${escapeHtml(date)}">
+          <div class="swap-day-head">
+            <div class="swap-day-name">${escapeHtml(dayName(date) || "Day")}</div>
+            <div class="swap-day-date">${escapeHtml(fmtDateShort(date))}</div>
+          </div>
+          ${mealsHtml}
+        </section>
+      `;
+    })
+    .join("");
 
-          btn.title = item.name || "Select food";
+  host.innerHTML = `
+    <div class="swap-week-head">
+      <div>
+        <div class="swap-week-title">Week Plan</div>
+        <div class="swap-week-sub">${escapeHtml(weekLabel)}</div>
+      </div>
+    </div>
+    ${renderLegend()}
+    <div class="swap-calendar">${daysHtml}</div>
+  `;
 
-          const dot = el("span", "gdot");
-          const g = (item.group || "other").toLowerCase();
-          dot.style.background = GROUP_COLORS[g] || GROUP_COLORS.other;
+  // Clear “Generating…” when calendar successfully re-renders
+  setStatus("", { show: false });
 
-          const name = el("div", "name", item.name || "Food item");
-          const meta = el(
-            "div",
-            "meta",
-            (item.grams ?? item.portion_g)
-              ? `${Math.round(Number(item.grams ?? item.portion_g))}g`
-              : item.portion
-                ? `${item.portion}`
-                : ""
-          );
-
-          btn.appendChild(dot);
-          btn.appendChild(name);
-          btn.appendChild(meta);
-
-          itemsWrap.appendChild(btn);
-        }
-      }
-
-      mealWrap.appendChild(itemsWrap);
-      col.appendChild(mealWrap);
-    }
-
-    frag.appendChild(col);
+  // Re-apply selected highlight if any
+  if (UI_STATE.selected) {
+    highlightSelected(UI_STATE.selected);
   }
-
-  cal.appendChild(frag);
 }
 
-export function renderSwapsHeader(selectedFood) {
-  const box = q("swapsHeader");
-  if (!box) return;
+function highlightSelected(sel) {
+  $all(".swap-item-btn.is-selected").forEach((el) => el.classList.remove("is-selected"));
+  const host = findCalendarHost();
+  if (!host) return;
 
-  box.innerHTML = "";
+  // Find the button with matching meta
+  const btns = $all("[data-swap-item]", host);
+  for (const b of btns) {
+    try {
+      const meta = JSON.parse(b.getAttribute("data-swap-item"));
+      if (
+        meta?.date === sel.date &&
+        meta?.mealKey === sel.mealKey &&
+        meta?.itemIndex === sel.itemIndex
+      ) {
+        b.classList.add("is-selected");
+        break;
+      }
+    } catch (_) {}
+  }
+}
 
-  if (!selectedFood) {
-    const t = el("div", "t", "Select a food");
-    const s = el(
-      "div",
-      "s",
-      "We’ll show equivalent swaps in the same subgroup first (fruit→fruit, grain→grain), then allowed alternates."
-    );
-    box.appendChild(t);
-    box.appendChild(s);
+function getPlanItemAt(meta) {
+  const plan = UI_STATE.plan;
+  if (!plan) return null;
+  const day = plan.days?.find((d) => d.date === meta.date) ?? plan.days?.[meta.dayIndex];
+  if (!day) return null;
+  const meal = day.meals?.[meta.mealKey];
+  const rawItem = meal?.items?.[meta.itemIndex];
+  if (!rawItem) return null;
+  return normalizeItem(rawItem);
+}
+
+function cacheKeyFor(meta, item) {
+  const base = `${meta.date}|${meta.mealKey}|${meta.itemIndex}`;
+  const id = item?.food_id ? `|${item.food_id}` : `|${item.label}`;
+  return base + id;
+}
+
+async function apiInvoke(preferredFnNames, actionName, payload) {
+  const api = API;
+
+  // preferredFnNames: array of possible method names on API
+  for (const fn of preferredFnNames) {
+    if (api && typeof api[fn] === "function") {
+      return await api[fn](payload);
+    }
+  }
+
+  // common generic patterns
+  if (api && typeof api.call === "function") return await api.call(actionName, payload);
+  if (api && typeof api.post === "function") return await api.post(actionName, payload);
+  if (api && typeof api.request === "function") return await api.request(actionName, payload);
+  if (api && typeof api.run === "function") return await api.run(actionName, payload);
+
+  throw new Error("API module does not expose a swaps/recipes method (api.js).");
+}
+
+async function handlePickItem(meta, itemBtnEl) {
+  const item = getPlanItemAt(meta);
+  if (!item) return;
+
+  UI_STATE.selected = { ...meta, item };
+  highlightSelected(UI_STATE.selected);
+
+  renderSwapsHeader(item);
+
+  // If your swaps panel exists, scroll it into view gently on small screens
+  const swapsHost = findSwapsHost();
+  if (swapsHost && window.innerWidth < 1100) {
+    swapsHost.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  const key = cacheKeyFor(meta, item);
+  if (UI_STATE.swapCache.has(key)) {
+    renderSwapResults(UI_STATE.swapCache.get(key), { from: item, at: meta });
     return;
   }
 
-  const name = selectedFood.name || selectedFood.foodName || selectedFood.title || "Selected food";
-  const grams = selectedFood.grams ?? selectedFood.portion_g ?? selectedFood.portion ?? "";
-  const cal = selectedFood.calories ?? selectedFood.kcal ?? "";
+  setStatus("Finding swaps…", { show: true });
 
-  const t = el("div", "t", name);
-  const s = el(
-    "div",
-    "s",
-    [
-      grams ? `Portion: ${Math.round(Number(grams))}g` : null,
-      cal ? `Calories: ${Math.round(Number(cal))}` : null,
-      selectedFood.group ? `Group: ${selectedFood.group}` : null,
-      selectedFood.subgroup ? `Subgroup: ${selectedFood.subgroup}` : null,
-    ]
-      .filter(Boolean)
-      .join(" • ")
+  const profile = getProfileSafe() || {};
+  const payload = {
+    item: {
+      label: item.label,
+      subgroup: item.subgroup,
+      swap_vector: item.swap_vector || item.raw?.swap_vector || { c: 0, p: 0, f: 0 },
+      food_id: item.food_id || null,
+      grams: item.grams || 0,
+      macros: item.macros || null,
+    },
+    profile,
+  };
+
+  const res = await apiInvoke(
+    ["swapsSuggest", "swaps_suggest", "suggestSwaps", "getSwaps"],
+    "swaps_suggest",
+    payload
   );
 
-  box.appendChild(t);
-  box.appendChild(s);
-}
+  // normalize response
+  const groups =
+    res?.groups ??
+    res?.data?.groups ??
+    res?.ok?.groups ??
+    res?.result?.groups ??
+    (res?.ok === true ? res?.groups : null) ??
+    (res?.ok === true ? res?.data?.groups : null);
 
-export function renderSwapResults(swapsInput, selectedFood) {
-  const list = q("swapsList");
-  if (!list) return;
-
-  list.innerHTML = "";
-
-  const swaps =
-    swapsInput?.swaps && Array.isArray(swapsInput.swaps)
-      ? swapsInput.swaps
-      : Array.isArray(swapsInput)
-        ? swapsInput
-        : [];
-
-  if (!swaps.length) {
-    const empty = el("div", "");
-    empty.style.color = "rgba(15,23,42,.55)";
-    empty.style.fontWeight = "900";
-    empty.style.fontSize = "12px";
-    empty.textContent = "No swaps yet. Click a food item first.";
-    list.appendChild(empty);
+  if (!Array.isArray(groups) || groups.length === 0) {
+    setStatus("No swaps returned.", { show: true, spin: false });
+    setTimeout(() => setStatus("", { show: false }), 1400);
+    renderSwapResults([], { from: item, at: meta });
     return;
   }
 
-  for (const cand of swaps) {
-    const row = el("div", "swap-result");
+  UI_STATE.swapCache.set(key, groups);
+  renderSwapResults(groups, { from: item, at: meta });
 
-    const left = el("div", "");
-    const n = el("div", "n", cand.name || "Swap option");
-
-    // Optional macro/fit line if available
-    const parts = [];
-    const grams = cand.grams ?? cand.portion_g ?? cand.portion ?? null;
-    const cal = cand.calories ?? cand.kcal ?? null;
-
-    if (grams) parts.push(`${Math.round(Number(grams))}g`);
-    if (cal) parts.push(`${Math.round(Number(cal))} kcal`);
-
-    // If API gives deltas, show them
-    if (cand.delta && typeof cand.delta === "object") {
-      const dc = cand.delta.caloriesPct ?? cand.delta.kcalPct ?? null;
-      if (dc !== null && dc !== undefined) parts.push(`Δ kcal ${Number(dc).toFixed(1)}%`);
-    }
-
-    const m = el("div", "m", parts.join(" • "));
-
-    left.appendChild(n);
-    if (parts.length) left.appendChild(m);
-
-    const btn = el("button", "", "Use");
-    btn.type = "button";
-
-    // Dataset for app.js to apply swap (we include aliases for safety)
-    btn.dataset.action = "apply-swap";
-    btn.dataset.newId = cand.id ?? "";
-    btn.dataset.id = cand.id ?? "";
-    btn.dataset.newFoodId = cand.id ?? "";
-    btn.dataset.newName = cand.name ?? "";
-    btn.dataset.newGrams = String(grams ?? "");
-    btn.dataset.newCalories = String(cal ?? "");
-
-    if (selectedFood) {
-      btn.dataset.oldId = selectedFood.id ?? selectedFood.foodId ?? "";
-      btn.dataset.oldFoodId = selectedFood.id ?? selectedFood.foodId ?? "";
-      btn.dataset.day = selectedFood.day ?? "";
-      btn.dataset.meal = selectedFood.meal ?? "";
-    }
-
-    row.appendChild(left);
-    row.appendChild(btn);
-
-    list.appendChild(row);
-  }
+  setStatus("", { show: false });
 }
 
-export function renderFreeFoods(items) {
-  const wrap = q("freeFoods");
-  if (!wrap) return;
+export function renderSwapsHeader(itemArg) {
+  ensureCSS();
+  const host = findSwapsHost();
+  if (!host) return;
 
-  wrap.innerHTML = "";
+  const item = normalizeItem(itemArg);
+  if (!item || !item.label) {
+    host.innerHTML = `
+      <div class="swap-selected">
+        <div class="name">Select a food</div>
+        <div class="meta">We’ll show equivalent swaps in the same subgroup first, then allowed alternates.</div>
+      </div>
+    `;
+    return;
+  }
 
-  const list =
-    Array.isArray(items) ? items : Array.isArray(items?.freeFoods) ? items.freeFoods : [];
+  const m = item.macros || {};
+  const metaParts = [];
+  if (item.grams) metaParts.push(`${round(item.grams, 0)} g`);
+  if (m.kcal) metaParts.push(`${round(m.kcal, 0)} kcal`);
+  if (m.carbs_g != null) metaParts.push(`C ${round(m.carbs_g, 1)}g`);
+  if (m.protein_g != null) metaParts.push(`P ${round(m.protein_g, 1)}g`);
+  if (m.fat_g != null) metaParts.push(`F ${round(m.fat_g, 1)}g`);
 
+  host.innerHTML = `
+    <div class="swap-selected">
+      <div class="name">${escapeHtml(item.label)}</div>
+      <div class="meta">
+        ${item.subgroup ? `<span>${escapeHtml(item.subgroup)}</span>` : ``}
+        ${metaParts.map((p) => `<span>${escapeHtml(p)}</span>`).join("")}
+      </div>
+    </div>
+    <div class="swap-groups" data-ui="swapGroups"></div>
+  `;
+}
+
+export function renderSwapResults(groupsArg, ctx = {}) {
+  ensureCSS();
+  const host = findSwapsHost();
+  if (!host) return;
+
+  const groups = Array.isArray(groupsArg) ? groupsArg : [];
+  const box = host.querySelector('[data-ui="swapGroups"]') || host;
+
+  if (!groups.length) {
+    box.innerHTML = `
+      <div style="margin-top:12px;color:rgba(0,0,0,0.55);font-weight:800;">
+        No swaps yet. Click an item in your plan.
+      </div>
+    `;
+    return;
+  }
+
+  const from = ctx.from ? normalizeItem(ctx.from) : (UI_STATE.selected?.item ? normalizeItem(UI_STATE.selected.item) : null);
+  const at = ctx.at || UI_STATE.selected;
+
+  box.innerHTML = groups
+    .map((g, gi) => {
+      const title = escapeHtml(g.title || `Swaps ${gi + 1}`);
+      const items = Array.isArray(g.items) ? g.items : [];
+      const body = items
+        .map((it) => {
+          const n = normalizeItem(it);
+          if (!n || !n.label) return "";
+
+          const m = n.macros || {};
+          const mm = [];
+          if (n.grams) mm.push(`${round(n.grams, 0)} g`);
+          if (m.kcal) mm.push(`${round(m.kcal, 0)} kcal`);
+          if (m.carbs_g != null) mm.push(`C ${round(m.carbs_g, 1)}g`);
+          if (m.protein_g != null) mm.push(`P ${round(m.protein_g, 1)}g`);
+          if (m.fat_g != null) mm.push(`F ${round(m.fat_g, 1)}g`);
+
+          const applyPayload = {
+            to: {
+              label: n.label,
+              food_id: n.food_id || null,
+              subgroup: n.subgroup || "",
+              group: n.group || "",
+              grams: n.grams || 0,
+              macros: n.macros || null,
+              swap_vector: from?.swap_vector || from?.raw?.swap_vector || it.swap_vector || { c: 0, p: 0, f: 0 },
+            },
+            at: at ? { date: at.date, dayIndex: at.dayIndex, mealKey: at.mealKey, itemIndex: at.itemIndex } : null,
+          };
+
+          return `
+            <div class="swap-sug">
+              <div class="left">
+                <div class="nm">${escapeHtml(n.label)}</div>
+                <div class="mm">
+                  ${n.subgroup ? `<span>${escapeHtml(n.subgroup)}</span>` : ``}
+                  ${mm.map((x) => `<span>${escapeHtml(x)}</span>`).join("")}
+                </div>
+              </div>
+              <button class="btn" data-apply-swap="${escapeHtml(JSON.stringify(applyPayload))}">
+                Apply
+              </button>
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="swap-group">
+          <div class="swap-group-head" data-acc-head="1">
+            <div class="t">${title}</div>
+            <div style="font-weight:900;color:rgba(0,0,0,0.45);">Toggle</div>
+          </div>
+          <div class="swap-group-body" data-acc-body="1" data-open="true" style="display:flex;">
+            ${body || `<div style="color:rgba(0,0,0,0.55);font-weight:800;">No items in this group.</div>`}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function applySwapLocal(data) {
+  const at = data?.at;
+  const to = data?.to;
+  if (!at || !to) return;
+
+  const plan = normalizePlan(UI_STATE.plan || Storage?.getPlan?.());
+  if (!plan) throw new Error("No plan found to apply swap.");
+
+  const day = plan.days?.find((d) => d.date === at.date) ?? plan.days?.[at.dayIndex];
+  if (!day) throw new Error("Day not found.");
+
+  const meal = day.meals?.[at.mealKey];
+  if (!meal || !Array.isArray(meal.items)) throw new Error("Meal not found.");
+
+  // Preserve existing swap_vector unless new has one
+  const prev = meal.items[at.itemIndex] || {};
+  meal.items[at.itemIndex] = {
+    ...prev,
+    label: to.label ?? prev.label ?? prev.name,
+    name: to.label ?? prev.name ?? prev.label,
+    food_id: to.food_id ?? prev.food_id ?? prev.id ?? null,
+    id: to.food_id ?? prev.id ?? prev.food_id ?? null,
+    subgroup: to.subgroup ?? prev.subgroup ?? "",
+    group: to.group ?? prev.group ?? "",
+    grams: Number(to.grams ?? prev.grams ?? 0),
+    macros: to.macros ?? prev.macros ?? null,
+    swap_vector: to.swap_vector ?? prev.swap_vector ?? null,
+  };
+
+  // Save back
+  try {
+    if (Storage?.setPlan) Storage.setPlan(plan);
+  } catch (_) {
+    // fallback to localStorage if Storage module differs
+    try {
+      localStorage.setItem("swap_plan", JSON.stringify(plan));
+    } catch (_) {}
+  }
+
+  UI_STATE.plan = plan;
+
+  // Re-render calendar & keep selection
+  renderCalendar(plan);
+  UI_STATE.selected = { ...at, item: normalizeItem(meal.items[at.itemIndex]) };
+  highlightSelected(UI_STATE.selected);
+
+  // Update header + re-request swaps for the new item (optional)
+  renderSwapsHeader(UI_STATE.selected.item);
+  setStatus("Swap applied.", { show: true, spin: false });
+  setTimeout(() => setStatus("", { show: false }), 1200);
+}
+
+export function renderFreeFoods(listArg) {
+  ensureCSS();
+  const host = findFreeFoodsHost();
+  if (!host) return;
+
+  const list = Array.isArray(listArg) ? listArg : (listArg ? [listArg] : []);
   if (!list.length) {
-    // Keep it empty — UI already shows section title.
+    host.innerHTML = `<div style="margin-top:10px;color:rgba(0,0,0,0.55);font-weight:800;">No free foods listed yet.</div>`;
     return;
   }
 
-  for (const name of list) {
-    const chip = el("span", "swap-chip", String(name));
-    wrap.appendChild(chip);
+  host.innerHTML = `
+    <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+      ${list
+        .map((x) => {
+          const label = escapeHtml(x?.label ?? x?.name ?? String(x));
+          return `<div style="border:1px solid rgba(0,0,0,0.08);border-radius:14px;padding:10px 12px;background:rgba(0,0,0,0.02);font-weight:900;color:rgba(0,0,0,0.7);">${label}</div>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function readRecipesFromStorage() {
+  try {
+    if (Storage?.getRecipes) return Storage.getRecipes();
+  } catch (_) {}
+  try {
+    const raw = localStorage.getItem("swap_recipes");
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {}
+  return null;
+}
+
+function writeRecipesToStorage(recipes) {
+  try {
+    if (Storage?.setRecipes) Storage.setRecipes(recipes);
+    else localStorage.setItem("swap_recipes", JSON.stringify(recipes));
+  } catch (_) {
+    try {
+      localStorage.setItem("swap_recipes", JSON.stringify(recipes));
+    } catch (_) {}
   }
 }
 
-export function renderRecipes(recipesInput, weekPlanInput) {
-  const list = q("recipesList");
-  if (!list) return;
+export function renderRecipes(recipesArg, planArg) {
+  ensureCSS();
+  setProfileCache();
 
-  list.innerHTML = "";
+  const host = findRecipesHost();
+  if (!host) return;
 
-  const plan = normalizePlan(weekPlanInput);
-  const normalized = normalizeRecipes(recipesInput);
+  const plan = normalizePlan(planArg || UI_STATE.plan || Storage?.getPlan?.());
+  const recipes = recipesArg || UI_STATE.recipes || readRecipesFromStorage();
 
-  // If nothing passed, show placeholder
-  if (!normalized) {
-    const msg = el("div", "");
-    msg.style.color = "rgba(15,23,42,.65)";
-    msg.style.fontWeight = "900";
-    msg.textContent = plan
-      ? "Recipes will appear here after generation."
-      : "Generate a meal plan first, then generate recipes.";
-    list.appendChild(msg);
+  UI_STATE.recipes = recipes || null;
+
+  // Ensure a button exists in the view (without breaking your templates)
+  const existingBtn =
+    host.querySelector('[data-action="generate-recipes"]') ||
+    document.querySelector('[data-action="generate-recipes"]');
+
+  if (!existingBtn) {
+    // Only add if the template didn’t already provide it
+    host.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0 14px;">
+        <div>
+          <div style="font-size:22px;font-weight:900;">Recipes</div>
+          <div style="color:rgba(0,0,0,0.55);font-weight:700;margin-top:4px;">Generate recipes for your current week. Stored in your browser.</div>
+        </div>
+        <button data-action="generate-recipes" style="border:1px solid rgba(0,0,0,0.12);background:white;border-radius:14px;padding:10px 14px;font-weight:900;cursor:pointer;">
+          Generate recipes for this week
+        </button>
+      </div>
+      <div data-ui="recipesBody"></div>
+    `;
+  }
+
+  const body = host.querySelector('[data-ui="recipesBody"]') || host;
+
+  if (!plan || !Array.isArray(plan.days) || plan.days.length === 0) {
+    body.innerHTML = `<div style="color:rgba(0,0,0,0.55);font-weight:800;">No plan loaded. Generate a week plan first.</div>`;
     return;
   }
 
-  if (normalized.kind === "text") {
-    const card = el("div", "swap-recipe-card");
-    card.appendChild(el("div", "name", "Recipes"));
-    const content = el("div", "content", normalized.text);
-    card.appendChild(content);
-    list.appendChild(card);
+  const byDate = recipes && typeof recipes === "object" ? recipes : {};
+
+  const daysUI = plan.days
+    .map((d) => {
+      const date = d.date;
+      const rec = byDate[date] || byDate[String(date)] || null;
+
+      // Recipe payload shape from your backend: { meals:[{meal_key, meal_label, summary, ingredients[], steps[]}] }
+      const meals = Array.isArray(rec?.meals) ? rec.meals : [];
+
+      const mealsHtml = meals
+        .map((m) => {
+          const title = escapeHtml(m.meal_label || mealLabel(m.meal_key));
+          const summary = escapeHtml(m.summary || "");
+          const ingredients = Array.isArray(m.ingredients) ? m.ingredients : [];
+          const steps = Array.isArray(m.steps) ? m.steps : [];
+
+          return `
+            <div class="swap-rec-meal">
+              <div class="h">${title}</div>
+              ${summary ? `<div class="s">${summary}</div>` : ``}
+              <div class="swap-rec-cols">
+                <div class="swap-rec-box">
+                  <div class="t">Ingredients</div>
+                  <ol>${ingredients.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ol>
+                </div>
+                <div class="swap-rec-box">
+                  <div class="t">Steps</div>
+                  <ol>${steps.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ol>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+
+      const has = meals.length > 0;
+
+      return `
+        <div class="swap-rec-day">
+          <div class="swap-rec-day-head" data-rec-day-head="1">
+            <div class="d">${escapeHtml(dayName(date))} · ${escapeHtml(fmtDateShort(date))}</div>
+            <div style="font-weight:900;color:rgba(0,0,0,0.45);">${has ? "Toggle" : "Not generated"}</div>
+          </div>
+          <div class="swap-rec-day-body" data-rec-day-body="1" data-open="${has ? "false" : "false"}" style="display:none;">
+            ${has ? mealsHtml : `<div style="color:rgba(0,0,0,0.55);font-weight:800;">Recipes will appear here after generation.</div>`}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  body.innerHTML = `<div class="swap-recipes">${daysUI}</div>`;
+}
+
+async function maybeGenerateRecipesFallback() {
+  // If app.js already generates recipes, it will call renderRecipes.
+  // This fallback is only here so your “Generate recipes” button always does something.
+  const plan = normalizePlan(UI_STATE.plan || Storage?.getPlan?.());
+  if (!plan || !Array.isArray(plan.days) || plan.days.length === 0) {
+    setStatus("No plan loaded. Generate a plan first.", { show: true, spin: false });
+    setTimeout(() => setStatus("", { show: false }), 1600);
     return;
   }
 
-  // Build per-day structure
-  let days = [];
+  const profile = getProfileSafe() || {};
+  const out = {};
 
-  if (normalized.kind === "daysArray") {
-    days = normalized.days || [];
-  } else if (normalized.kind === "byDate") {
-    const entries = Object.entries(normalized.byDate || {}).sort(([a], [b]) => (a < b ? -1 : 1));
-    days = entries.map(([date, meals]) => ({ date, meals }));
+  for (let i = 0; i < plan.days.length; i++) {
+    const day = plan.days[i];
+    setStatus(`Generating recipes… (${i + 1}/${plan.days.length})`, { show: true });
+
+    const payload = { day, profile };
+
+    const res = await apiInvoke(
+      ["recipeGenerate", "recipe_generate", "generateRecipe", "getRecipe"],
+      "recipe_generate",
+      payload
+    );
+
+    const recipe = res?.recipe ?? res?.data?.recipe ?? (res?.ok === true ? res?.recipe : null) ?? res;
+    if (recipe) out[day.date] = recipe;
   }
 
-  // If recipes are keyed but plan exists, align order to plan.days
-  if (plan?.days?.length) {
-    const map = new Map(days.map((d) => [d.date, d]));
-    days = plan.days.map((pd) => map.get(pd.date) || { date: pd.date, meals: {} });
-  }
+  UI_STATE.recipes = out;
+  writeRecipesToStorage(out);
+  renderRecipes(out, plan);
 
-  for (const day of days) {
-    const details = document.createElement("details");
-    details.className = "swap-day-accordion";
-    details.open = false;
-
-    const sum = document.createElement("summary");
-    const left = el("div", "", dayNameShort(day.date) || "Day");
-    const right = el("div", "meta", dateShort(day.date) || "");
-    sum.appendChild(left);
-    sum.appendChild(right);
-    details.appendChild(sum);
-
-    const body = el("div", "swap-recipe-body");
-
-    // meals can be object or array
-    const mealsObj = day.meals || {};
-    const mealEntries = Array.isArray(mealsObj)
-      ? mealsObj.map((m) => [m.key || m.meal || m.label, m])
-      : Object.entries(mealsObj);
-
-    if (!mealEntries.length) {
-      const empty = el("div", "");
-      empty.style.color = "rgba(15,23,42,.55)";
-      empty.style.fontWeight = "900";
-      empty.textContent = "No recipes yet for this day.";
-      body.appendChild(empty);
-    } else {
-      for (const [mealKey, rec] of mealEntries) {
-        const card = el("div", "swap-recipe-card");
-
-        const hdr = el("div", "hdr");
-        hdr.appendChild(el("div", "meal", (mealKey || "Meal").toString()));
-        card.appendChild(hdr);
-
-        const title =
-          rec?.title || rec?.name || rec?.recipe || rec?.headline || "Recipe";
-        card.appendChild(el("div", "name", title));
-
-        // Build a short excerpt (ingredients line 1–2 or description)
-        const excerpt =
-          rec?.excerpt ||
-          rec?.description ||
-          (Array.isArray(rec?.ingredients) ? rec.ingredients.slice(0, 3).join(", ") : "") ||
-          "";
-        if (excerpt) card.appendChild(el("div", "small", excerpt));
-
-        const more = document.createElement("details");
-        const moreSum = document.createElement("summary");
-        moreSum.textContent = "Expand";
-        more.appendChild(moreSum);
-
-        const contentParts = [];
-
-        if (Array.isArray(rec?.ingredients) && rec.ingredients.length) {
-          contentParts.push("Ingredients:\n" + rec.ingredients.map((x) => `• ${x}`).join("\n"));
-        }
-        if (Array.isArray(rec?.steps) && rec.steps.length) {
-          contentParts.push("Steps:\n" + rec.steps.map((x, i) => `${i + 1}. ${x}`).join("\n"));
-        }
-        if (typeof rec?.content === "string" && rec.content.trim()) {
-          contentParts.push(rec.content.trim());
-        }
-        if (typeof rec === "string" && rec.trim()) {
-          contentParts.push(rec.trim());
-        }
-
-        const content = el("div", "content", contentParts.join("\n\n") || "No details available.");
-        more.appendChild(content);
-        card.appendChild(more);
-
-        body.appendChild(card);
-      }
-    }
-
-    details.appendChild(body);
-    list.appendChild(details);
-  }
+  setStatus("Recipes ready.", { show: true, spin: false });
+  setTimeout(() => setStatus("", { show: false }), 1200);
 }

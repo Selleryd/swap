@@ -1,219 +1,214 @@
 // api.js
-// SWAP Frontend API (GitHub Pages-safe via JSONP)
-// Paste your Apps Script Web App /exec URL below.
+// SWAP frontend API wrapper (GitHub Pages friendly via JSONP)
+// IMPORTANT: Paste your Apps Script /exec URL in exactly ONE place below.
 
-const SWAP_EXEC_URL =
-  (globalThis.__SWAP_CONFIG__ && globalThis.__SWAP_CONFIG__.EXEC_URL) ||
-  globalThis.localStorage?.getItem("SWAP_EXEC_URL") ||
-  "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec";
+const DEFAULT_EXEC_URL = "https://script.google.com/macros/s/AKfycbw_XJ2cfqwDckDu9bdHbCwpOkipeiPtRF_M60nD-QqTwGS2MxlU-wht5dmOjIBMGnj7eg/exec"; // <-- ONLY PLACE YOU PASTE
 
-function setExecUrl(url) {
-  const u = String(url || "").trim();
-  if (!u) throw new Error("Missing URL");
-  globalThis.localStorage?.setItem("SWAP_EXEC_URL", u);
+function getExecUrl() {
+  // Optional override without editing code: localStorage.setItem("SWAP_EXEC_URL", "...exec");
+  const ls = (typeof localStorage !== "undefined") ? localStorage.getItem("SWAP_EXEC_URL") : "";
+  const w = (typeof window !== "undefined") ? window : {};
+  const fromWindow = w.__SWAP_EXEC_URL || w.SWAP_EXEC_URL || "";
+  const url = String(fromWindow || ls || DEFAULT_EXEC_URL).trim();
+
+  if (!url || url === "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE") {
+    throw new Error("Missing Apps Script EXEC URL. Set DEFAULT_EXEC_URL in api.js or localStorage SWAP_EXEC_URL.");
+  }
+  return url.replace(/\/+$/, "");
 }
 
-// JSONP with better error detection (prevents silent timeouts on HTML/login responses)
-function jsonp(params = {}, { timeoutMs = 30000 } = {}) {
-  const execUrl = String(SWAP_EXEC_URL || "").trim();
-  if (!execUrl || execUrl.includes("PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE")) {
-    return Promise.reject(
-      new Error("SWAP_EXEC_URL not set. Paste your Apps Script /exec URL into api.js.")
-    );
-  }
+function buildUrl(route, params = {}) {
+  const base = getExecUrl();
+  const usp = new URLSearchParams();
+  usp.set("route", route);
+  usp.set("_ts", String(Date.now())); // cache-bust
 
+  Object.keys(params).forEach(k => {
+    const v = params[k];
+    if (v === undefined || v === null || v === "") return;
+    usp.set(k, String(v));
+  });
+
+  return `${base}?${usp.toString()}`;
+}
+
+function jsonp(url, { timeoutMs = 20000 } = {}) {
   return new Promise((resolve, reject) => {
-    const cbName = `__swap_jsonp_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+    const cb = `__swap_jsonp_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const sep = url.includes("?") ? "&" : "?";
+    const src = `${url}${sep}callback=${cb}`;
 
-    let script, timer;
-
-    const onWindowError = (ev) => {
-      // If Apps Script returns HTML/login page, browser often throws:
-      // "Unexpected token '<'" with filename pointing to script.googleusercontent.com...
-      const msg = String(ev?.message || "");
-      const file = String(ev?.filename || "");
-      const looksLikeOurScript =
-        file.includes("script.googleusercontent.com") ||
-        file.includes("script.google.com") ||
-        file.includes(execUrl);
-
-      if (looksLikeOurScript && (msg.includes("Unexpected token") || msg.includes("<"))) {
-        cleanup();
-        reject(
-          new Error(
-            "Apps Script did NOT return JSONP JavaScript (it returned HTML/login/permission page). " +
-              "Fix: Deploy web app as 'Anyone' and use the /exec URL (not /dev)."
-          )
-        );
-      }
-    };
-
-    const cleanup = () => {
-      try {
-        window.removeEventListener("error", onWindowError);
-      } catch (e) {}
-      try {
-        delete window[cbName];
-      } catch (e) {}
-      if (script && script.parentNode) script.parentNode.removeChild(script);
-      if (timer) clearTimeout(timer);
-    };
-
-    window.addEventListener("error", onWindowError);
-
-    window[cbName] = (data) => {
-      cleanup();
-      resolve(data);
-    };
-
-    const qs = new URLSearchParams();
-    Object.keys(params).forEach((k) => {
-      const v = params[k];
-      if (v === undefined || v === null) return;
-      qs.set(k, String(v));
-    });
-    qs.set("callback", cbName);
-
-    const src = execUrl + (execUrl.includes("?") ? "&" : "?") + qs.toString();
-
-    script = document.createElement("script");
-    script.src = src;
+    let done = false;
+    const script = document.createElement("script");
     script.async = true;
+    script.src = src;
 
-    script.onerror = () => {
-      cleanup();
-      reject(
-        new Error(
-          "JSONP request failed to load. Check SWAP_EXEC_URL, deployment access, and that you're using /exec."
-        )
-      );
-    };
-
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
       cleanup();
       reject(new Error("Request timed out."));
     }, timeoutMs);
 
+    function cleanup() {
+      clearTimeout(timer);
+      try { delete window[cb]; } catch (_) { window[cb] = undefined; }
+      if (script && script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[cb] = (data) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(data);
+    };
+
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("Network error loading JSONP script."));
+    };
+
     document.head.appendChild(script);
-  }).then((res) => {
-    if (!res) throw new Error("Empty response");
-    if (res.ok === false) throw new Error(res.error || "Request failed");
-    return res;
   });
 }
 
-function safeStr(s, max = 200) {
-  s = String(s || "").trim();
-  return s.length > max ? s.slice(0, max) : s;
-}
-function num(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-function firstNonEmpty(...vals) {
-  for (const v of vals) {
-    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+async function jsonpWithRetry(url, opts = {}, retries = 1) {
+  try {
+    return await jsonp(url, opts);
+  } catch (e) {
+    if (retries <= 0) throw e;
+    return await jsonp(url, opts);
   }
-  return "";
+}
+
+function assertOk(res) {
+  if (!res || res.ok !== true) {
+    const msg = (res && res.error) ? res.error : "Request failed.";
+    throw new Error(msg);
+  }
+  return res;
+}
+
+function pickPortionGrams(item) {
+  // Prefer explicit grams
+  if (item && typeof item.grams === "number" && isFinite(item.grams) && item.grams > 0) return item.grams;
+
+  // Try to parse from "portion" string like "140 g"
+  const s = String(item?.portion || "").toLowerCase();
+  const m = s.match(/(\d+(\.\d+)?)/);
+  if (m) {
+    const n = parseFloat(m[1]);
+    if (isFinite(n) && n > 0) return n;
+  }
+  return 0;
 }
 
 export const API = {
-  health: () => jsonp({ route: "health" }, { timeoutMs: 20000 }),
-  meta: () => jsonp({ route: "meta" }, { timeoutMs: 20000 }),
+  // Optional setter without editing file
+  setExecUrl(url) {
+    localStorage.setItem("SWAP_EXEC_URL", String(url || "").trim());
+  },
 
-  foods: (q, { limit = 25, group = "" } = {}) =>
-    jsonp(
-      { route: "foods", q: safeStr(q, 80), limit: String(limit), group: safeStr(group, 40) },
-      { timeoutMs: 25000 }
-    ),
+  async health() {
+    const res = await jsonpWithRetry(buildUrl("health"), { timeoutMs: 15000 }, 1);
+    return assertOk(res);
+  },
 
-  food: (id) => jsonp({ route: "food", id: String(id || "").trim() }, { timeoutMs: 25000 }),
+  async searchFoods(q, { limit = 25, group = "" } = {}) {
+    const res = await jsonpWithRetry(buildUrl("foods", { q, limit, group }), { timeoutMs: 20000 }, 1);
+    return assertOk(res);
+  },
 
-  swap: ({ id, portion_g, tol = 0.05, flex = 0, limit = 12, same_group = 1 }) =>
-    jsonp(
-      {
-        route: "swap",
-        id: String(id || "").trim(),
-        portion_g: String(num(portion_g, 0)),
-        tol: String(num(tol, 0.05)),
-        flex: String(flex ? 1 : 0),
-        limit: String(limit),
-        same_group: String(same_group ? 1 : 0),
-      },
-      { timeoutMs: 35000 }
-    ),
+  async getFood(id) {
+    const res = await jsonpWithRetry(buildUrl("food", { id }), { timeoutMs: 20000 }, 1);
+    return assertOk(res);
+  },
 
-  // Meal plan generation can take longer (cold start + OpenAI)
-  generatePlan: async (profile, computed) => {
-    const calories = Math.round(num(computed?.caloriesTarget, 0));
-    const protein_g = Math.round(num(computed?.proteinGTarget, 0));
-    const dietary = safeStr(profile?.dietary, 200);
-    const allergens = safeStr(profile?.allergens, 200);
-    const weekStart = startOfWeekISO(new Date());
+  async swap({ id, portion_g, same_group = 1, limit = 12 }) {
+    const res = await jsonpWithRetry(
+      buildUrl("swap", {
+        id,
+        portion_g,
+        same_group,
+        limit,
+        // keep tolerance internal; backend default is 0.05
+      }),
+      { timeoutMs: 25000 },
+      1
+    );
+    return assertOk(res);
+  },
 
-    return jsonp(
-      {
-        route: "plan",
-        calories: String(calories),
-        protein_g: String(protein_g),
+  // === MAIN FIX: this now calls route=plan which we added to Code.gs ===
+  async generatePlan(profile, computed) {
+    const cal = Math.round(computed?.caloriesTarget || 0);
+    const protein = Math.round(computed?.proteinGTarget || 0);
+
+    const dietary = String(profile?.dietary || "");
+    const allergens = String(profile?.allergens || "");
+
+    const res = await jsonpWithRetry(
+      buildUrl("plan", {
+        cal,
+        protein,
         dietary,
         allergens,
-        week_start: weekStart,
-      },
-      { timeoutMs: 120000 }
+        ai: 1 // uses OPENAI_API_KEY if set; fallback if not
+      }),
+      { timeoutMs: 30000 },
+      1
     );
+
+    assertOk(res);
+
+    // Sanity check: ensure there are actual items so the calendar fills
+    const days = res?.plan?.days || [];
+    const hasAnyItem = Array.isArray(days) && days.some(d =>
+      (d.meals || []).some(m => Array.isArray(m.items) && m.items.length)
+    );
+    if (!hasAnyItem) throw new Error("Plan generated but contains no meal items. Check Apps Script logs for route=plan.");
+
+    return res;
   },
 
-  suggestSwaps: async (context) => {
+  async suggestSwaps(context) {
     const item = context?.item || {};
-    const id = firstNonEmpty(item.id, item.foodId, item.food_id);
-    const name = safeStr(item.name, 120);
+    let id = String(item.id || "").trim();
+    let portion_g = pickPortionGrams(item);
 
-    const portion_g =
-      num(item.portion_g, 0) ||
-      num(item.portionG, 0) ||
-      num(item.grams, 0) ||
-      num(item.g, 0) ||
-      100;
-
-    return jsonp(
-      {
-        route: "suggestswaps",
-        id: String(id || "").trim(),
-        name,
-        portion_g: String(portion_g),
-        tol: "0.05",
-        flex: "0",
-        limit: "12",
-        same_group: "1",
-      },
-      { timeoutMs: 45000 }
-    );
-  },
-
-  generateRecipe: async ({ day, profile }) => {
-    const names = [];
-    const meals = day?.meals || [];
-    for (const meal of meals) {
-      const items = meal?.items || [];
-      for (const it of items) if (it?.name) names.push(String(it.name).trim());
+    // If item has no id, try to resolve via foods search
+    if (!id) {
+      const name = String(item.name || "").trim();
+      if (!name) throw new Error("Missing item name/id for swaps.");
+      const found = await this.searchFoods(name, { limit: 5 });
+      const best = (found.results || [])[0];
+      if (!best?.id) throw new Error("Could not match item to database for swaps.");
+      id = best.id;
     }
 
-    const foods = names.filter(Boolean).slice(0, 30).join("|");
-    const dietary = safeStr(profile?.dietary, 200);
-    const allergens = safeStr(profile?.allergens, 200);
+    if (!portion_g || portion_g <= 0) {
+      // If grams missing, default to 100g to avoid errors
+      portion_g = 100;
+    }
 
-    return jsonp({ route: "recipe", foods, dietary, allergens }, { timeoutMs: 120000 });
+    const res = await this.swap({ id, portion_g, same_group: 1, limit: 12 });
+    return res;
   },
 
-  setExecUrl,
-};
+  async generateRecipe({ day, profile }) {
+    const date = String(day?.date || "").trim();
+    if (!date) throw new Error("Missing day.date for recipe.");
 
-function startOfWeekISO(dt) {
-  const d = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
-  d.setDate(d.getDate() - d.getDay()); // Sunday start
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
-}
+    const dietary = String(profile?.dietary || "");
+    const allergens = String(profile?.allergens || "");
+
+    const res = await jsonpWithRetry(
+      buildUrl("recipe", { date, dietary, allergens, ai: 1 }),
+      { timeoutMs: 30000 },
+      1
+    );
+    return assertOk(res);
+  }
+};

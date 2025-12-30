@@ -1,1475 +1,992 @@
 /* ui.js — SWAP UI (calendar + swaps + recipes)
-   Paste-ready. No dependencies. Works with SWAP_API if present.
-
-   Expected (but not required) globals:
-   - window.SWAP_API.getSwaps({ id, portion_g, limit, same_group, tol, flex })
-   - window.SWAP_API.getFood({ id })
-   - window.SWAP_API.execUrl (optional) or window.SWAP_CONFIG.execUrl
-
-   Expected routes in Apps Script:
-   ?route=swap&id=...&portion_g=...&limit=12&same_group=1&tol=0.05&flex=0
-   ?route=plan ... (already working in your backend)
-
-   This UI module provides:
-   - SWAP_UI.setPlan(planOrResponse)
-   - SWAP_UI.setRecipes(recipesOrResponse)
-   - SWAP_UI.renderSwaps(swapsOrResponse)
-   - SWAP_UI.replaceSelectedWith(candidate)  // used by swap list
+   Drop-in, non-crashing renderer with fail-open behavior.
+   Version: 2025-12-30.2
 */
-
 (function () {
   "use strict";
 
-  /* ---------------------------
-     Small utilities
-  --------------------------- */
+  const UI_VERSION = "ui-2025-12-30.2";
 
-  const LS = {
-    PLAN: "swap_current_plan_v1",
-    RECIPES_PREFIX: "swap_recipes_v1_", // + weekStart
-    SELECTED: "swap_selected_item_v1",
-  };
+  // -----------------------------
+  // Fail-open (prevents blank page)
+  // -----------------------------
+  function failOpen() {
+    try {
+      document.documentElement.style.visibility = "visible";
+      document.body.style.visibility = "visible";
+      document.body.style.opacity = "1";
+      document.body.style.display = "";
+      document.documentElement.classList.remove("preload", "loading", "is-loading", "hidden");
+      document.body.classList.remove("preload", "loading", "is-loading", "hidden");
+    } catch (_) {}
+  }
 
-  function $(sel, root = document) {
-    return root.querySelector(sel);
-  }
-  function $all(sel, root = document) {
-    return Array.from(root.querySelectorAll(sel));
-  }
-  function el(tag, attrs = {}, children = []) {
-    const node = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs || {})) {
-      if (k === "class") node.className = v;
-      else if (k === "html") node.innerHTML = v;
-      else if (k === "text") node.textContent = v;
-      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
-      else if (v === false || v === null || v === undefined) continue;
-      else node.setAttribute(k, String(v));
+  window.addEventListener("error", failOpen);
+  window.addEventListener("unhandledrejection", failOpen);
+
+  // -----------------------------
+  // Helpers
+  // -----------------------------
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  function safeJSONParse(s, fallback = null) {
+    try {
+      return JSON.parse(s);
+    } catch (_) {
+      return fallback;
     }
-    for (const c of children || []) {
-      if (c === null || c === undefined) continue;
-      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    }
-    return node;
   }
 
-  function escapeHtml(s) {
-    return String(s || "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+  function isoToDate(iso) {
+    // iso like "2025-12-27"
+    // force local-safe parsing
+    const d = new Date(iso + "T00:00:00");
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function fmtDow(d) {
+    return d.toLocaleDateString(undefined, { weekday: "long" });
+  }
+
+  function fmtMD(d) {
+    return d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
   }
 
   function clamp(n, a, b) {
-    n = Number(n);
-    if (!Number.isFinite(n)) return a;
     return Math.max(a, Math.min(b, n));
   }
 
-  function pad2(n) {
-    n = String(n);
-    return n.length === 1 ? "0" + n : n;
+  function ellipsize(s, n) {
+    s = String(s || "").trim();
+    if (s.length <= n) return s;
+    return s.slice(0, Math.max(0, n - 1)).trim() + "…";
   }
 
-  function toMMDDYYYY(iso) {
-    // iso: YYYY-MM-DD
-    if (!iso || typeof iso !== "string" || iso.length < 10) return iso || "";
-    const y = iso.slice(0, 4);
-    const m = iso.slice(5, 7);
-    const d = iso.slice(8, 10);
-    return `${m}/${d}/${y}`;
-  }
-
-  function dayNameFromISO(iso) {
-    // Local timezone is fine for display. Use noon to avoid DST edge cases.
-    try {
-      const [y, m, d] = iso.split("-").map((x) => parseInt(x, 10));
-      const dt = new Date(y, m - 1, d, 12, 0, 0);
-      return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dt.getDay()];
-    } catch {
-      return "";
-    }
-  }
-
-  function shortDayNameFromISO(iso) {
-    const n = dayNameFromISO(iso);
-    return n ? n.slice(0, 3) : "";
-  }
-
-  function parseGrams(x) {
-    // Accept number or "123 g"
-    if (typeof x === "number" && Number.isFinite(x)) return x;
-    const s = String(x || "");
-    const m = s.match(/([0-9]+(\.[0-9]+)?)/);
-    if (!m) return null;
-    return Number(m[1]);
-  }
-
-  function withTimeout(promise, ms, msg = "Request timed out.") {
-    let t;
-    const timeout = new Promise((_, rej) => {
-      t = setTimeout(() => rej(new Error(msg)), ms);
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
-  }
-
-  /* ---------------------------
-     State + container detection
-  --------------------------- */
-
-  const state = {
-    plan: null,
-    recipes: null,
-    recipesDirty: false,
-    selected: null, // { item, ctx }
-    els: {
-      weekGrid: null,
-      weekLabel: null,
-      swapsBox: null,
-      swapsTitle: null,
-      swapsList: null,
-      swapsHint: null,
-      recipesBox: null,
-      recipesList: null,
-      recipesBtn: null,
-    },
-    config: {
-      swapsLimit: 12,
-      tol: 0.05,
-      flex: 0,
-      same_group: 1,
-      requestTimeoutMs: 25000,
-    },
-  };
-
-  function detectContainers() {
-    // Meal plan grid container (the calendar columns)
-    const weekGrid =
-      $("[data-swap-week-grid]") ||
-      $("#swap-week-grid") ||
-      $("#weekPlanDays") ||
-      $("#weekPlanGrid") ||
-      $("#mealPlanGrid") ||
-      $(".week-plan-grid") ||
-      $(".week-grid");
-
-    // Week label ("Week of ...")
-    const weekLabel =
-      $("[data-swap-week-label]") ||
-      $("#weekPlanLabel") ||
-      $("#weekLabel") ||
-      $(".week-plan-label");
-
-    // Swaps panel container + title + list
-    const swapsBox =
-      $("[data-swap-swaps]") ||
-      $("#swapsPanel") ||
-      $("#swapSwaps") ||
-      $(".swaps-panel") ||
-      $(".swaps");
-
-    const swapsTitle =
-      (swapsBox && (swapsBox.querySelector("[data-swap-swaps-title]") || swapsBox.querySelector(".swaps-title"))) ||
-      $("#swapsTitle");
-
-    const swapsList =
-      (swapsBox && (swapsBox.querySelector("[data-swap-swaps-list]") || swapsBox.querySelector(".swaps-list"))) ||
-      $("#swapsList");
-
-    const swapsHint =
-      (swapsBox && (swapsBox.querySelector("[data-swap-swaps-hint]") || swapsBox.querySelector(".swaps-hint"))) ||
-      $("#swapsHint");
-
-    // Recipes container + list
-    const recipesBox =
-      $("[data-swap-recipes]") ||
-      $("#recipesPanel") ||
-      $("#recipesView") ||
-      $(".recipes-panel") ||
-      $(".recipes");
-
-    const recipesList =
-      (recipesBox && (recipesBox.querySelector("[data-swap-recipes-list]") || recipesBox.querySelector(".recipes-list"))) ||
-      $("#recipesList") ||
-      $("#recipesDays");
-
-    state.els.weekGrid = weekGrid;
-    state.els.weekLabel = weekLabel;
-    state.els.swapsBox = swapsBox;
-    state.els.swapsTitle = swapsTitle;
-    state.els.swapsList = swapsList;
-    state.els.swapsHint = swapsHint;
-    state.els.recipesBox = recipesBox;
-    state.els.recipesList = recipesList;
-  }
-
-  function ensureStyles() {
-    if ($("#swapui-styles")) return;
-
+  function injectStyles() {
+    if ($("#swap-ui-css")) return;
     const css = `
-/* -----------------------
-   SWAP UI overhaul
------------------------- */
-:root{
-  --swapui-bg: rgba(255,255,255,0.72);
-  --swapui-card: rgba(255,255,255,0.78);
-  --swapui-border: rgba(15,23,42,0.10);
-  --swapui-border2: rgba(15,23,42,0.14);
-  --swapui-text: #0f172a;
-  --swapui-muted: rgba(15,23,42,0.60);
-  --swapui-soft: rgba(15,23,42,0.05);
-  --swapui-accent: #6d28d9;
-  --swapui-accent2: #10b981;
-  --swapui-shadow: 0 18px 45px rgba(2,6,23,0.10);
-  --swapui-radius: 18px;
-  --swapui-radius2: 14px;
-  --swapui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+/* ---- SWAP UI injected styles (scoped) ---- */
+.swap-ui-calendar {
+  width: 100%;
 }
-
-.swapui-weekGrid{
+.swap-ui-weekgrid {
   display: grid;
   grid-template-columns: repeat(7, minmax(220px, 1fr));
   gap: 14px;
   align-items: start;
   width: 100%;
 }
-@media (max-width: 1100px){
-  .swapui-weekGrid{
-    grid-template-columns: repeat(7, 240px);
+@media (max-width: 1100px) {
+  .swap-ui-weekwrap {
     overflow-x: auto;
-    padding-bottom: 8px;
-    scrollbar-width: thin;
+    padding-bottom: 10px;
   }
-  .swapui-weekGrid::-webkit-scrollbar{ height: 10px; }
+  .swap-ui-weekgrid {
+    width: max-content;
+    grid-template-columns: repeat(7, 260px);
+    scroll-snap-type: x mandatory;
+  }
+  .swap-ui-day {
+    scroll-snap-align: start;
+  }
 }
-
-.swapui-dayCol{
-  background: var(--swapui-card);
-  border: 1px solid var(--swapui-border);
-  border-radius: var(--swapui-radius);
-  box-shadow: var(--swapui-shadow);
-  overflow: hidden;
+.swap-ui-day {
+  background: rgba(255,255,255,0.78);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  padding: 12px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+}
+.swap-ui-dayhead {
   display: flex;
-  flex-direction: column;
-  min-height: 520px;
-}
-.swapui-dayHeader{
-  padding: 14px 14px 10px 14px;
-  border-bottom: 1px solid var(--swapui-border);
-  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.70));
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  backdrop-filter: blur(10px);
-}
-.swapui-dayTitleRow{
-  display:flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 10px;
 }
-.swapui-dayTitle{
-  font-family: var(--swapui-font);
+.swap-ui-dayname {
   font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--swapui-text);
-  font-size: 14px;
-  line-height: 1.1;
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.92);
+  letter-spacing: 0.2px;
 }
-.swapui-dayDate{
-  font-family: var(--swapui-font);
-  font-weight: 600;
-  color: var(--swapui-muted);
+.swap-ui-daydate {
   font-size: 12px;
-  white-space: nowrap;
+  color: rgba(71, 85, 105, 0.92);
+  font-weight: 650;
 }
-.swapui-dayMetaRow{
-  margin-top: 8px;
-  display:flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.swap-ui-meal {
+  margin-top: 10px;
 }
-.swapui-chip{
-  font-family: var(--swapui-font);
-  font-weight: 700;
-  font-size: 11px;
-  color: rgba(15,23,42,0.78);
-  background: rgba(15,23,42,0.05);
-  border: 1px solid rgba(15,23,42,0.07);
-  border-radius: 999px;
-  padding: 5px 8px;
-}
-.swapui-dayBody{
-  padding: 12px 12px 14px 12px;
-  overflow: auto;
-  flex: 1;
-}
-.swapui-meal{
-  margin-bottom: 12px;
-  border-radius: var(--swapui-radius2);
-  background: rgba(255,255,255,0.72);
-  border: 1px solid rgba(15,23,42,0.07);
-  overflow: hidden;
-}
-.swapui-mealHeader{
-  padding: 10px 10px 8px 10px;
-  display:flex;
-  align-items:center;
+.swap-ui-mealhead {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  border-bottom: 1px solid rgba(15,23,42,0.06);
-  background: rgba(255,255,255,0.72);
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
 }
-.swapui-mealLabel{
-  font-family: var(--swapui-font);
-  font-weight: 900;
-  letter-spacing: -0.01em;
-  color: var(--swapui-text);
+.swap-ui-meallabel {
   font-size: 12px;
-}
-.swapui-mealKcal{
-  font-family: var(--swapui-font);
   font-weight: 800;
-  color: rgba(15,23,42,0.55);
+  color: rgba(51, 65, 85, 0.95);
+}
+.swap-ui-mealmeta {
   font-size: 11px;
+  font-weight: 650;
+  color: rgba(100, 116, 139, 0.95);
   white-space: nowrap;
 }
-.swapui-items{
-  padding: 8px 8px 10px 8px;
-  display:flex;
-  flex-direction: column;
+.swap-ui-items {
+  display: grid;
   gap: 8px;
+  margin-top: 8px;
 }
-.swapui-item{
+.swap-ui-food {
   width: 100%;
   text-align: left;
-  background: rgba(255,255,255,0.92);
-  border: 1px solid rgba(15,23,42,0.10);
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  background: rgba(255,255,255,0.96);
   border-radius: 14px;
   padding: 9px 10px;
   cursor: pointer;
-  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
-  display:flex;
-  gap: 10px;
-  align-items: flex-start;
+  transition: transform .08s ease, box-shadow .12s ease, border-color .12s ease;
+  position: relative;
 }
-.swapui-item:hover{
+.swap-ui-food:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgba(2,6,23,0.10);
-  border-color: rgba(109,40,217,0.28);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.10);
+  border-color: rgba(15, 23, 42, 0.16);
 }
-.swapui-item.is-selected{
-  border-color: rgba(109,40,217,0.55);
-  box-shadow: 0 12px 28px rgba(109,40,217,0.18);
+.swap-ui-food.is-selected {
+  outline: 2px solid rgba(99, 102, 241, 0.55);
+  box-shadow: 0 16px 40px rgba(99, 102, 241, 0.18);
 }
-.swapui-itemLeft{
-  flex: 1;
-  min-width: 0;
-}
-.swapui-itemName{
-  font-family: var(--swapui-font);
-  font-weight: 800;
-  color: var(--swapui-text);
+.swap-ui-foodname {
   font-size: 12px;
-  line-height: 1.22;
-  display:block;
-  overflow:hidden;
-  text-overflow: ellipsis;
-}
-.swapui-itemSub{
-  margin-top: 4px;
-  font-family: var(--swapui-font);
-  font-weight: 700;
-  color: rgba(15,23,42,0.58);
-  font-size: 11px;
+  font-weight: 800;
+  color: rgba(15, 23, 42, 0.92);
   line-height: 1.2;
-  display:flex;
-  gap: 8px;
-  flex-wrap: wrap;
 }
-.swapui-pill{
-  display:inline-flex;
-  align-items:center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(15,23,42,0.05);
-  border: 1px solid rgba(15,23,42,0.07);
-}
-.swapui-dot{
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: rgba(15,23,42,0.28);
-}
-.swapui-dot.protein{ background: rgba(16,185,129,0.90); }
-.swapui-dot.carb{ background: rgba(99,102,241,0.90); }
-.swapui-dot.fat{ background: rgba(239,68,68,0.85); }
-.swapui-dot.fruit{ background: rgba(59,130,246,0.85); }
-.swapui-dot.veg{ background: rgba(34,197,94,0.85); }
-.swapui-dot.other{ background: rgba(148,163,184,0.95); }
-
-.swapui-itemRight{
-  flex: 0 0 auto;
-  text-align: right;
-  min-width: 62px;
-}
-.swapui-kcal{
-  font-family: var(--swapui-font);
-  font-weight: 900;
-  color: rgba(15,23,42,0.78);
+.swap-ui-foodsub {
   font-size: 11px;
-}
-.swapui-portion{
-  margin-top: 4px;
-  font-family: var(--swapui-font);
-  font-weight: 800;
-  color: rgba(15,23,42,0.52);
-  font-size: 11px;
-}
-
-/* Swaps panel (right) */
-.swapui-swapsWrap{
-  display:flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.swapui-swapsHead{
-  display:flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-.swapui-swapsTitle{
-  font-family: var(--swapui-font);
-  font-weight: 900;
-  color: var(--swapui-text);
-  font-size: 14px;
-  letter-spacing: -0.02em;
-}
-.swapui-swapsSub{
+  font-weight: 650;
+  color: rgba(71, 85, 105, 0.92);
   margin-top: 3px;
-  font-family: var(--swapui-font);
-  font-weight: 700;
-  color: rgba(15,23,42,0.60);
-  font-size: 12px;
-}
-.swapui-swapCard{
-  background: rgba(255,255,255,0.90);
-  border: 1px solid rgba(15,23,42,0.10);
-  border-radius: 16px;
-  padding: 10px;
-  display:flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: flex;
   gap: 10px;
-}
-.swapui-swapName{
-  font-family: var(--swapui-font);
-  font-weight: 850;
-  font-size: 12px;
-  color: var(--swapui-text);
-  line-height: 1.25;
-}
-.swapui-swapMeta{
-  margin-top: 6px;
-  display:flex;
-  gap: 8px;
   flex-wrap: wrap;
 }
-.swapui-mini{
-  font-family: var(--swapui-font);
-  font-weight: 800;
-  font-size: 11px;
-  color: rgba(15,23,42,0.62);
-  background: rgba(15,23,42,0.05);
-  border: 1px solid rgba(15,23,42,0.07);
+.swap-ui-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
   border-radius: 999px;
-  padding: 4px 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.9);
 }
-.swapui-btn{
-  appearance: none;
-  border: none;
-  cursor: pointer;
+.swap-ui-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  padding: 9px 12px;
-  font-family: var(--swapui-font);
-  font-weight: 900;
+  opacity: 0.9;
+}
+.swap-ui-dot.protein { background: rgba(34, 197, 94, 0.95); }
+.swap-ui-dot.carb    { background: rgba(168, 85, 247, 0.95); }
+.swap-ui-dot.fat     { background: rgba(239, 68, 68, 0.92); }
+.swap-ui-dot.fruit   { background: rgba(59, 130, 246, 0.92); }
+.swap-ui-dot.veg     { background: rgba(20, 184, 166, 0.92); }
+.swap-ui-dot.other   { background: rgba(148, 163, 184, 0.92); }
+
+.swap-ui-muted {
   font-size: 12px;
-  color: white;
-  background: linear-gradient(90deg, var(--swapui-accent), var(--swapui-accent2));
-  box-shadow: 0 10px 22px rgba(16,185,129,0.18);
-  white-space: nowrap;
-}
-.swapui-btn:disabled{
-  opacity: 0.55;
-  cursor: not-allowed;
+  color: rgba(100, 116, 139, 0.95);
+  font-weight: 650;
+  padding: 10px 0;
 }
 
-/* Recipes page */
-.swapui-recipesWrap{
-  display:flex;
-  flex-direction: column;
+/* Swaps panel (right side) */
+.swap-ui-swaps {
+  display: grid;
+  gap: 10px;
+}
+.swap-ui-selhead {
+  display: grid;
+  gap: 4px;
+}
+.swap-ui-seltitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: rgba(15, 23, 42, 0.92);
+}
+.swap-ui-selmeta {
+  font-size: 11px;
+  font-weight: 650;
+  color: rgba(100, 116, 139, 0.95);
+}
+.swap-ui-swaprow {
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  background: rgba(255,255,255,0.96);
+  border-radius: 14px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
-.swapui-dayAccordion{
-  background: rgba(255,255,255,0.78);
-  border: 1px solid rgba(15,23,42,0.10);
+.swap-ui-swapname {
+  font-size: 12px;
+  font-weight: 850;
+  color: rgba(15, 23, 42, 0.92);
+  line-height: 1.2;
+}
+.swap-ui-swapmeta {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 650;
+  color: rgba(71, 85, 105, 0.92);
+}
+.swap-ui-btn {
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(248, 250, 252, 0.92);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.swap-ui-btn:hover {
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+/* Recipes view */
+.swap-ui-recipes {
+  display: grid;
+  gap: 10px;
+}
+.swap-ui-acc {
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  background: rgba(255,255,255,0.92);
   border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 18px 45px rgba(2,6,23,0.08);
 }
-.swapui-dayAccordion summary{
-  list-style: none;
+.swap-ui-accbtn {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   cursor: pointer;
-  padding: 14px 14px;
-  display:flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  border: 0;
+  background: transparent;
 }
-.swapui-dayAccordion summary::-webkit-details-marker{ display:none; }
-.swapui-accTitle{
-  font-family: var(--swapui-font);
-  font-weight: 950;
-  color: var(--swapui-text);
-  font-size: 14px;
-  letter-spacing: -0.02em;
-}
-.swapui-accSub{
-  margin-top: 2px;
-  font-family: var(--swapui-font);
-  font-weight: 750;
-  color: rgba(15,23,42,0.60);
-  font-size: 12px;
-}
-.swapui-accChevron{
-  font-family: var(--swapui-font);
+.swap-ui-acctitle {
+  font-size: 13px;
   font-weight: 900;
-  color: rgba(15,23,42,0.55);
+  color: rgba(15, 23, 42, 0.92);
+}
+.swap-ui-accsub {
   font-size: 12px;
+  font-weight: 650;
+  color: rgba(100, 116, 139, 0.95);
+  white-space: nowrap;
 }
-.swapui-accBody{
-  padding: 12px 14px 14px 14px;
-  border-top: 1px solid rgba(15,23,42,0.08);
-  background: rgba(255,255,255,0.72);
+.swap-ui-accbody {
+  padding: 0 14px 14px 14px;
+  display: none;
 }
-.swapui-recipeBlock{
-  margin-bottom: 12px;
-  padding: 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(15,23,42,0.08);
-  background: rgba(255,255,255,0.92);
+.swap-ui-acc.is-open .swap-ui-accbody {
+  display: block;
 }
-.swapui-recipeHeader{
-  display:flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.swapui-recipeMeal{
-  font-family: var(--swapui-font);
-  font-weight: 950;
-  font-size: 12px;
-  color: var(--swapui-text);
-  letter-spacing: -0.01em;
-}
-.swapui-recipeNote{
-  font-family: var(--swapui-font);
-  font-weight: 800;
-  font-size: 11px;
-  color: rgba(15,23,42,0.55);
-}
-.swapui-recipeText{
+.swap-ui-recipeblock {
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  padding-top: 10px;
   margin-top: 10px;
-  font-family: var(--swapui-font);
-  font-weight: 700;
+}
+.swap-ui-recipename {
+  font-weight: 900;
   font-size: 12px;
-  line-height: 1.45;
-  color: rgba(15,23,42,0.82);
+  color: rgba(15, 23, 42, 0.92);
+}
+.swap-ui-recipetext {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(51, 65, 85, 0.95);
   white-space: pre-wrap;
 }
-.swapui-warn{
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(239,68,68,0.18);
-  background: rgba(239,68,68,0.06);
-  color: rgba(127,29,29,0.95);
-  font-family: var(--swapui-font);
-  font-weight: 900;
-  font-size: 12px;
+.swap-ui-excerpt {
+  display: inline;
 }
+.swap-ui-more {
+  display: none;
+}
+.swap-ui-recipetext.is-collapsed .swap-ui-more {
+  display: none;
+}
+.swap-ui-recipetext.is-collapsed .swap-ui-excerpt {
+  display: inline;
+}
+.swap-ui-link {
+  margin-top: 8px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+  color: rgba(99, 102, 241, 0.95);
+}
+.swap-ui-link:hover { text-decoration: underline; }
+    `.trim();
 
-    `;
-
-    const style = el("style", { id: "swapui-styles", text: css });
+    const style = document.createElement("style");
+    style.id = "swap-ui-css";
+    style.textContent = css;
     document.head.appendChild(style);
   }
 
-  /* ---------------------------
-     Normalizers
-  --------------------------- */
+  // -----------------------------
+  // State
+  // -----------------------------
+  const state = {
+    plan: null,
+    selected: null, // {dayIndex, mealKey, itemIndex, item}
+    swaps: [],
+    recipes: null,
+    busy: false,
+  };
 
-  function normalizePlan(input) {
-    if (!input) return null;
-
-    // If API response shape: {ok:true, plan:{...}}
-    if (input.plan && typeof input.plan === "object") return input.plan;
-
-    // If already plan object
-    if (input.days && Array.isArray(input.days)) return input;
-
-    // If nested differently
-    if (input.data && input.data.plan) return input.data.plan;
-
+  // -----------------------------
+  // Locate containers (non brittle)
+  // -----------------------------
+  function findHeading(text) {
+    const t = String(text || "").trim().toLowerCase();
+    const hs = $$("h1,h2,h3");
+    for (const h of hs) {
+      if (String(h.textContent || "").trim().toLowerCase() === t) return h;
+    }
     return null;
   }
 
-  function normalizeSwaps(input) {
-    if (!input) return { ok: false, error: "No swaps response." };
-    if (Array.isArray(input)) return { ok: true, swaps: input };
-    if (input.swaps && Array.isArray(input.swaps)) return input;
-    if (input.items && Array.isArray(input.items)) return { ok: true, swaps: input.items };
-    if (input.data && input.data.swaps) return { ok: true, swaps: input.data.swaps };
-    return input;
-  }
-
-  // Recipes shapes can vary widely; we normalize into:
-  // { weekStart, byDate: { 'YYYY-MM-DD': { breakfast: '...', lunch:'...', ... , __all?: '...' } } }
-  function normalizeRecipes(input, plan) {
-    if (!input) return null;
-
-    const out = {
-      weekStart: (plan && plan.weekStart) || null,
-      byDate: {},
-      raw: input,
-    };
-
-    // If API response: {ok:true, recipes: ...}
-    const payload = input.recipes ? input.recipes : input;
-
-    // If already normalized
-    if (payload.byDate && typeof payload.byDate === "object") return payload;
-
-    // If string => treat as one big block for week
-    if (typeof payload === "string") {
-      if (out.weekStart) {
-        (plan.days || []).forEach((d) => {
-          out.byDate[d.date] = { __all: payload };
-        });
-      } else {
-        out.byDate["__week"] = { __all: payload };
-      }
-      return out;
-    }
-
-    // If array of entries: try to map
-    if (Array.isArray(payload)) {
-      for (const r of payload) {
-        const date = r.date || r.day || r.iso || null;
-        const meal = (r.meal || r.mealKey || r.key || "").toLowerCase();
-        const text = r.text || r.recipe || r.content || r.body || "";
-        if (!date) continue;
-        out.byDate[date] = out.byDate[date] || {};
-        if (meal) out.byDate[date][meal] = text;
-        else out.byDate[date].__all = text;
-      }
-      return out;
-    }
-
-    // If object keyed by date
-    if (payload && typeof payload === "object") {
-      // Common shape: { 'YYYY-MM-DD': { breakfast:'...', ... } }
-      const keys = Object.keys(payload);
-      const looksDateKeyed = keys.some((k) => /^\d{4}-\d{2}-\d{2}$/.test(k));
-      if (looksDateKeyed) {
-        for (const k of keys) {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
-          const v = payload[k];
-          if (typeof v === "string") out.byDate[k] = { __all: v };
-          else if (v && typeof v === "object") out.byDate[k] = { ...v };
-        }
-        return out;
-      }
-
-      // Another common shape: { days:[{date, meals:{breakfast:'...'}}] }
-      if (Array.isArray(payload.days)) {
-        for (const d of payload.days) {
-          if (!d || !d.date) continue;
-          if (typeof d === "string") {
-            out.byDate[d] = { __all: "" };
-          } else {
-            const meals = d.meals || d.recipes || d.items || {};
-            if (typeof meals === "string") out.byDate[d.date] = { __all: meals };
-            else out.byDate[d.date] = { ...meals };
-          }
-        }
-        return out;
-      }
-
-      // Fallback: store under week
-      out.byDate["__week"] = { __all: JSON.stringify(payload, null, 2) };
-      return out;
-    }
-
-    return null;
-  }
-
-  /* ---------------------------
-     Persistence
-  --------------------------- */
-
-  function savePlan(plan) {
-    try {
-      localStorage.setItem(LS.PLAN, JSON.stringify(plan));
-    } catch {}
-  }
-
-  function loadPlan() {
-    try {
-      const raw = localStorage.getItem(LS.PLAN);
-      if (!raw) return null;
-      return normalizePlan(JSON.parse(raw));
-    } catch {
-      return null;
-    }
-  }
-
-  function saveRecipes(recipesNorm) {
-    try {
-      const wk = recipesNorm.weekStart || (state.plan && state.plan.weekStart) || "unknown";
-      localStorage.setItem(LS.RECIPES_PREFIX + wk, JSON.stringify(recipesNorm));
-    } catch {}
-  }
-
-  function loadRecipesForWeek(weekStart) {
-    try {
-      const raw = localStorage.getItem(LS.RECIPES_PREFIX + weekStart);
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-
-  /* ---------------------------
-     Rendering: Meal plan calendar
-  --------------------------- */
-
-  function groupDotClass(group) {
-    const g = String(group || "").toLowerCase();
-    if (g.includes("protein")) return "protein";
-    if (g.includes("carb") || g.includes("grain") || g.includes("starch")) return "carb";
-    if (g.includes("fat") || g.includes("oil") || g.includes("nut")) return "fat";
-    if (g.includes("fruit")) return "fruit";
-    if (g.includes("veg")) return "veg";
-    return "other";
-  }
-
-  function mealSortKey(mealKey) {
-    const k = String(mealKey || "").toLowerCase();
-    const order = {
-      breakfast: 1,
-      "snack_am": 2,
-      snackam: 2,
-      snack_am: 2,
-      lunch: 3,
-      "snack_pm": 4,
-      snackpm: 4,
-      snack_pm: 4,
-      dinner: 5,
-    };
-    return order[k] || 99;
-  }
-
-  function prettyMealLabel(meal) {
-    const k = String(meal.key || meal.mealKey || meal.name || meal.label || "").toLowerCase();
-    const label = meal.label || meal.name || "";
-    if (label) return label;
-    if (k === "snack_am" || k === "snackam" || k === "snack_am") return "Snack (AM)";
-    if (k === "snack_pm" || k === "snackpm" || k === "snack_pm") return "Snack (PM)";
-    if (k) return k.charAt(0).toUpperCase() + k.slice(1);
-    return "Meal";
-  }
-
-  function calcMealKcal(meal) {
-    const items = Array.isArray(meal.items) ? meal.items : [];
-    const sum = items.reduce((acc, it) => acc + (Number(it.calories) || 0), 0);
-    return Math.round(sum);
-  }
-
-  function renderWeekLabel(plan) {
-    if (!state.els.weekLabel) return;
-    const ws = plan.weekStart || (plan.days && plan.days[0] && plan.days[0].date) || "";
-    if (!ws) return;
-    const txt = `Week of ${toMMDDYYYY(ws)}`;
-    state.els.weekLabel.textContent = txt;
-  }
-
-  function clearSelectedHighlight() {
-    $all(".swapui-item.is-selected").forEach((n) => n.classList.remove("is-selected"));
-  }
-
-  function setSelected(item, ctx, node) {
-    state.selected = { item, ctx };
-    try {
-      localStorage.setItem(LS.SELECTED, JSON.stringify({ id: item.id, date: ctx.date, mealKey: ctx.mealKey, idx: ctx.itemIndex }));
-    } catch {}
-    clearSelectedHighlight();
-    if (node) node.classList.add("is-selected");
-  }
-
-  function renderPlan(plan) {
-    detectContainers();
-    ensureStyles();
-
-    const grid = state.els.weekGrid;
-    if (!grid) return;
-
-    grid.classList.add("swapui-weekGrid");
-    grid.innerHTML = "";
-
-    renderWeekLabel(plan);
-
-    const frag = document.createDocumentFragment();
-    const days = Array.isArray(plan.days) ? plan.days : [];
-
-    for (const day of days) {
-      frag.appendChild(renderDayColumn(day, plan));
-    }
-
-    grid.appendChild(frag);
-  }
-
-  function renderDayColumn(day, plan) {
-    const iso = day.date || "";
-    const dayName = dayNameFromISO(iso) || "Day";
-    const dayShort = shortDayNameFromISO(iso);
-    const dateStr = toMMDDYYYY(iso);
-
-    const totals = day.totals || {};
-    const kcal = Math.round(Number(totals.calories) || 0);
-    const p = Math.round(Number(totals.protein_g) || 0);
-    const c = Math.round(Number(totals.carbs_g) || 0);
-    const f = Math.round(Number(totals.fat_g) || 0);
-
-    const header = el("div", { class: "swapui-dayHeader" }, [
-      el("div", { class: "swapui-dayTitleRow" }, [
-        el("div", { class: "swapui-dayTitle", text: dayName }),
-        el("div", { class: "swapui-dayDate", text: dateStr }),
-      ]),
-      el("div", { class: "swapui-dayMetaRow" }, [
-        kcal ? el("span", { class: "swapui-chip", text: `${kcal} kcal` }) : null,
-        p ? el("span", { class: "swapui-chip", text: `P ${p}g` }) : null,
-        c ? el("span", { class: "swapui-chip", text: `C ${c}g` }) : null,
-        f ? el("span", { class: "swapui-chip", text: `F ${f}g` }) : null,
-      ]),
-    ]);
-
-    const body = el("div", { class: "swapui-dayBody" });
-
-    let meals = Array.isArray(day.meals) ? day.meals : [];
-    meals = meals.slice().sort((a, b) => mealSortKey(a.key || a.mealKey) - mealSortKey(b.key || b.mealKey));
-
-    for (const meal of meals) {
-      body.appendChild(renderMealBlock(meal, iso));
-    }
-
-    const col = el("section", { class: "swapui-dayCol", "data-date": iso }, [header, body]);
-    return col;
-  }
-
-  function renderMealBlock(meal, isoDate) {
-    const label = prettyMealLabel(meal);
-    const kcal = calcMealKcal(meal);
-    const items = Array.isArray(meal.items) ? meal.items : [];
-
-    const head = el("div", { class: "swapui-mealHeader" }, [
-      el("div", { class: "swapui-mealLabel", text: label }),
-      el("div", { class: "swapui-mealKcal", text: kcal ? `${kcal} kcal` : "" }),
-    ]);
-
-    const list = el("div", { class: "swapui-items" });
-
-    items.forEach((item, idx) => {
-      list.appendChild(renderFoodItemButton(item, {
-        date: isoDate,
-        mealKey: (meal.key || meal.mealKey || label || "").toString(),
-        mealLabel: label,
-        itemIndex: idx,
-      }));
-    });
-
-    return el("div", { class: "swapui-meal" }, [head, list]);
-  }
-
-  function renderFoodItemButton(item, ctx) {
-    const group = item.group || item.food_group || item.category || "";
-    const subgroup = item.subgroup || item.food_subgroup || "";
-    const grams = Number(item.grams);
-    const portion = item.portion || (Number.isFinite(grams) ? `${Math.round(grams)} g` : "");
-    const kcal = Number(item.calories) || 0;
-
-    const dot = groupDotClass(group);
-
-    const btn = el("button", { class: "swapui-item", type: "button" }, [
-      el("div", { class: "swapui-itemLeft" }, [
-        el("span", { class: "swapui-itemName", text: item.name || item.title || "Food item" }),
-        el("div", { class: "swapui-itemSub" }, [
-          el("span", { class: "swapui-pill" }, [
-            el("span", { class: `swapui-dot ${dot}` }),
-            el("span", { text: String(group || "other").toUpperCase() }),
-          ]),
-          subgroup
-            ? el("span", { class: "swapui-pill", text: subgroup })
-            : null,
-        ]),
-      ]),
-      el("div", { class: "swapui-itemRight" }, [
-        el("div", { class: "swapui-kcal", text: kcal ? `${Math.round(kcal)} kcal` : "" }),
-        el("div", { class: "swapui-portion", text: portion || "" }),
-      ]),
-    ]);
-
-    btn.addEventListener("click", async () => {
-      setSelected(item, ctx, btn);
-      await loadAndRenderSwaps(item, ctx);
-    });
-
-    return btn;
-  }
-
-  /* ---------------------------
-     Swaps panel
-  --------------------------- */
-
-  function renderSwapsEmpty() {
-    detectContainers();
-    ensureStyles();
-
-    const box = state.els.swapsBox;
-    const list = state.els.swapsList || (box ? box : null);
-    if (!list) return;
-
-    // Don’t destroy user’s existing panel structure, just populate list if found.
-    if (state.els.swapsTitle) state.els.swapsTitle.textContent = "Select a food";
-    if (state.els.swapsHint) state.els.swapsHint.textContent = "Click a food item in the calendar to see equivalent swaps.";
-
-    list.innerHTML = el("div", { class: "swapui-swapsWrap" }, [
-      el("div", { class: "swapui-swapsHead" }, [
-        el("div", {}, [
-          el("div", { class: "swapui-swapsTitle", text: "Select a food" }),
-          el("div", { class: "swapui-swapsSub", text: "We’ll show equivalent swaps in the same group first, then allowed alternates." }),
-        ]),
-      ]),
-    ]).outerHTML;
-  }
-
-  function renderSwapsLoading(item) {
-    detectContainers();
-    ensureStyles();
-
-    const list = state.els.swapsList || state.els.swapsBox;
-    if (!list) return;
-
-    const title = item ? `Finding swaps…` : "Finding swaps…";
-    list.innerHTML = el("div", { class: "swapui-swapsWrap" }, [
-      el("div", { class: "swapui-swapsHead" }, [
-        el("div", {}, [
-          el("div", { class: "swapui-swapsTitle", text: title }),
-          el("div", { class: "swapui-swapsSub", text: item ? (item.name || "") : "" }),
-        ]),
-      ]),
-      el("div", { class: "swapui-swapCard" }, [
-        el("div", {}, [
-          el("div", { class: "swapui-swapName", text: "Loading…" }),
-          el("div", { class: "swapui-swapMeta" }, [
-            el("span", { class: "swapui-mini", text: "Please wait" }),
-          ]),
-        ]),
-        el("button", { class: "swapui-btn", disabled: true, text: "Replace" }),
-      ]),
-    ]).outerHTML;
-  }
-
-  function renderSwapsError(errMsg) {
-    detectContainers();
-    ensureStyles();
-
-    const list = state.els.swapsList || state.els.swapsBox;
-    if (!list) return;
-
-    list.innerHTML = el("div", { class: "swapui-swapsWrap" }, [
-      el("div", { class: "swapui-swapsHead" }, [
-        el("div", {}, [
-          el("div", { class: "swapui-swapsTitle", text: "Swaps unavailable" }),
-          el("div", { class: "swapui-swapsSub", text: errMsg || "Something went wrong." }),
-        ]),
-      ]),
-    ]).outerHTML;
-  }
-
-  function renderSwapsList(swapsResp, item, ctx) {
-    detectContainers();
-    ensureStyles();
-
-    const list = state.els.swapsList || state.els.swapsBox;
-    if (!list) return;
-
-    const swaps = swapsResp.swaps || [];
-    const title = item ? `Swaps for: ${item.name || "Food"}` : "Swaps";
-    const sub = item
-      ? `${Math.round(Number(item.calories) || 0)} kcal • ${Math.round(Number(item.grams) || parseGrams(item.portion) || 0)} g`
-      : "";
-
-    const wrap = el("div", { class: "swapui-swapsWrap" }, [
-      el("div", { class: "swapui-swapsHead" }, [
-        el("div", {}, [
-          el("div", { class: "swapui-swapsTitle", text: title }),
-          el("div", { class: "swapui-swapsSub", text: sub }),
-        ]),
-      ]),
-    ]);
-
-    if (!swaps.length) {
-      wrap.appendChild(
-        el("div", { class: "swapui-swapCard" }, [
-          el("div", {}, [
-            el("div", { class: "swapui-swapName", text: "No swaps found for this item." }),
-            el("div", { class: "swapui-swapMeta" }, [el("span", { class: "swapui-mini", text: "Try another item" })]),
-          ]),
-          el("button", { class: "swapui-btn", disabled: true, text: "Replace" }),
-        ])
-      );
-      list.innerHTML = "";
-      list.appendChild(wrap);
-      return;
-    }
-
-    for (const cand of swaps) {
-      const cName = cand.name || cand.title || "Swap option";
-      const cKcal = Math.round(Number(cand.calories) || 0);
-      const cG = Math.round(Number(cand.grams) || parseGrams(cand.portion) || 0);
-      const g = String(cand.group || "").toLowerCase();
-
-      const card = el("div", { class: "swapui-swapCard" }, [
-        el("div", { style: "min-width:0;" }, [
-          el("div", { class: "swapui-swapName", text: cName }),
-          el("div", { class: "swapui-swapMeta" }, [
-            el("span", { class: "swapui-mini", text: `${cKcal} kcal` }),
-            cG ? el("span", { class: "swapui-mini", text: `${cG} g` }) : null,
-            cand.group ? el("span", { class: "swapui-mini", text: String(cand.group).toUpperCase() }) : null,
-            cand.subgroup ? el("span", { class: "swapui-mini", text: String(cand.subgroup) }) : null,
-          ]),
-        ]),
-        el("button", {
-          class: "swapui-btn",
-          text: "Replace",
-          onclick: () => {
-            SWAP_UI.replaceSelectedWith(cand);
-          },
-        }),
-      ]);
-
-      wrap.appendChild(card);
-    }
-
-    list.innerHTML = "";
-    list.appendChild(wrap);
-  }
-
-  async function loadAndRenderSwaps(item, ctx) {
-    renderSwapsLoading(item);
-
-    const grams = Number(item.grams) || parseGrams(item.portion) || null;
-    const id = item.id || item.food_id || item.usda_id || null;
-
-    if (!id) {
-      renderSwapsError("This item has no ID. Swaps require a valid food id.");
-      return;
-    }
-    if (!grams || !Number.isFinite(grams) || grams <= 0) {
-      renderSwapsError("This item has no valid gram amount. Swaps require portion_g.");
-      return;
-    }
-
-    // Prefer SWAP_API.getSwaps if available
-    try {
-      let resp = null;
-
-      if (window.SWAP_API && typeof window.SWAP_API.getSwaps === "function") {
-        resp = await withTimeout(
-          window.SWAP_API.getSwaps({
-            id,
-            portion_g: grams,
-            limit: state.config.swapsLimit,
-            same_group: state.config.same_group,
-            tol: state.config.tol,
-            flex: state.config.flex,
-          }),
-          state.config.requestTimeoutMs
-        );
-      } else {
-        // fallback fetch against execUrl
-        const execUrl = (window.SWAP_API && window.SWAP_API.execUrl) || (window.SWAP_CONFIG && window.SWAP_CONFIG.execUrl) || window.execUrl;
-        if (!execUrl) throw new Error("Missing SWAP_API.getSwaps and no execUrl configured.");
-        const u = new URL(execUrl);
-        u.searchParams.set("route", "swap");
-        u.searchParams.set("id", id);
-        u.searchParams.set("portion_g", String(grams));
-        u.searchParams.set("limit", String(state.config.swapsLimit));
-        u.searchParams.set("same_group", String(state.config.same_group));
-        u.searchParams.set("tol", String(state.config.tol));
-        u.searchParams.set("flex", String(state.config.flex));
-        resp = await withTimeout(fetch(u.toString(), { method: "GET" }).then((r) => r.json()), state.config.requestTimeoutMs);
-      }
-
-      const norm = normalizeSwaps(resp);
-      if (!norm.ok) {
-        renderSwapsError(norm.error || "Unknown swaps error.");
-        return;
-      }
-      renderSwapsList(norm, item, ctx);
-    } catch (e) {
-      renderSwapsError(e && e.message ? e.message : String(e));
-    }
-  }
-
-  /* ---------------------------
-     Replace flow (swap selection)
-  --------------------------- */
-
-  function findSelectedInPlan(plan, sel) {
-    if (!plan || !sel || !sel.ctx) return null;
-    const { date, mealKey, itemIndex } = sel.ctx;
-    const day = (plan.days || []).find((d) => d.date === date);
-    if (!day) return null;
-
-    // mealKey might be label or key; match leniently
-    const mk = String(mealKey || "").toLowerCase();
-    const meal =
-      (day.meals || []).find((m) => String(m.key || m.mealKey || m.label || m.name || "").toLowerCase() === mk) ||
-      (day.meals || []).find((m) => String(m.label || "").toLowerCase() === mk);
-
-    if (!meal || !Array.isArray(meal.items)) return null;
-    const idx = clamp(itemIndex, 0, meal.items.length - 1);
-    return { day, meal, idx };
-  }
-
-  function replaceItemInPlan(candidate) {
-    const plan = state.plan;
-    const sel = state.selected;
-    if (!plan || !sel) return { ok: false, error: "No selected item." };
-
-    const found = findSelectedInPlan(plan, sel);
-    if (!found) return { ok: false, error: "Selected item not found in plan." };
-
-    const { meal, idx } = found;
-
-    // Keep context grams for portion matching if candidate provides different
-    const old = meal.items[idx];
-    const grams = Number(old.grams) || parseGrams(old.portion) || Number(candidate.grams) || parseGrams(candidate.portion) || null;
-
-    const merged = {
-      ...candidate,
-      grams: grams || candidate.grams,
-      portion: candidate.portion || (grams ? `${Math.round(grams)} g` : old.portion),
-    };
-
-    meal.items[idx] = merged;
-
-    // Mark recipes dirty (because plan changed)
-    state.recipesDirty = true;
-
-    // Recompute day totals lightly (optional)
-    // We’ll recompute totals across all meals for that day.
-    try {
-      const day = found.day;
-      const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
-      for (const m of day.meals || []) {
-        for (const it of m.items || []) {
-          totals.calories += Number(it.calories) || 0;
-          totals.protein_g += Number(it.protein_g) || 0;
-          totals.carbs_g += Number(it.carbs_g) || 0;
-          totals.fat_g += Number(it.fat_g) || 0;
-        }
-      }
-      day.totals = totals;
-    } catch {}
-
-    savePlan(plan);
-    return { ok: true, plan };
-  }
-
-  /* ---------------------------
-     Recipes rendering
-  --------------------------- */
-
-  function renderRecipes(plan, recipesNorm) {
-    detectContainers();
-    ensureStyles();
-
-    const host = state.els.recipesList || state.els.recipesBox;
-    if (!host) return;
-
-    const days = (plan && Array.isArray(plan.days) ? plan.days : []).map((d) => d.date);
-    const byDate = (recipesNorm && recipesNorm.byDate) || {};
-
-    const wrap = el("div", { class: "swapui-recipesWrap" });
-
-    if (state.recipesDirty) {
-      wrap.appendChild(
-        el("div", {
-          class: "swapui-warn",
-          text: "Heads up: you changed the meal plan (via swaps). Recipes may be out of date — regenerate recipes for the updated plan.",
-        })
-      );
-    }
-
-    // If we have plan days, show accordions per day
-    if (days.length) {
-      for (const iso of days) {
-        const dn = dayNameFromISO(iso);
-        const block = byDate[iso] || {};
-        const details = el("details", { class: "swapui-dayAccordion" }, [
-          el("summary", {}, [
-            el("div", {}, [
-              el("div", { class: "swapui-accTitle", text: dn || "Day" }),
-              el("div", { class: "swapui-accSub", text: toMMDDYYYY(iso) }),
-            ]),
-            el("div", { class: "swapui-accChevron", text: "Expand" }),
-          ]),
-          el("div", { class: "swapui-accBody" }, [
-            ...renderRecipeBlocksForDay(plan, iso, block),
-          ]),
-        ]);
-
-        // Update chevron label
-        details.addEventListener("toggle", () => {
-          const chev = details.querySelector(".swapui-accChevron");
-          if (chev) chev.textContent = details.open ? "Collapse" : "Expand";
-        });
-
-        wrap.appendChild(details);
-      }
-      host.innerHTML = "";
-      host.appendChild(wrap);
-      return;
-    }
-
-    // Fallback: no plan => show raw content
-    const rawStr =
-      (recipesNorm && recipesNorm.byDate && recipesNorm.byDate.__week && recipesNorm.byDate.__week.__all) ||
-      (recipesNorm && recipesNorm.byDate && recipesNorm.byDate.__all) ||
-      JSON.stringify(recipesNorm && recipesNorm.raw ? recipesNorm.raw : recipesNorm, null, 2);
-
-    host.innerHTML = "";
-    host.appendChild(
-      el("div", { class: "swapui-recipeBlock" }, [
-        el("div", { class: "swapui-recipeHeader" }, [
-          el("div", { class: "swapui-recipeMeal", text: "Recipes" }),
-          el("div", { class: "swapui-recipeNote", text: "Raw output" }),
-        ]),
-        el("div", { class: "swapui-recipeText", text: rawStr }),
-      ])
+  function getPlanMount() {
+    // Prefer explicit mounts if they exist
+    return (
+      $("#swap-week-grid") ||
+      $("[data-swap-week-grid]") ||
+      $("#weekGrid") ||
+      $("#week-grid") ||
+      $("#mealPlanGrid") ||
+      $("#meal-plan-grid") ||
+      $(".week-plan-grid") ||
+      (function () {
+        const h = findHeading("Week Plan");
+        return h ? h.closest("section,div") : null;
+      })()
     );
   }
 
-  function renderRecipeBlocksForDay(plan, isoDate, recipeObj) {
-    const out = [];
-    const day = (plan.days || []).find((d) => d.date === isoDate);
-
-    // We prefer to display per meal, and each meal block shows:
-    // - clickable food items (so swaps work here too)
-    // - recipe text if available
-    const meals = (day && Array.isArray(day.meals) ? day.meals : []).slice().sort((a, b) => mealSortKey(a.key || a.mealKey) - mealSortKey(b.key || b.mealKey));
-
-    for (const m of meals) {
-      const label = prettyMealLabel(m);
-      const mk = String(m.key || m.mealKey || label || "").toLowerCase();
-      let text = recipeObj && (recipeObj[mk] || recipeObj[label.toLowerCase()] || "");
-      if (!text && recipeObj && recipeObj.__all) text = recipeObj.__all;
-
-      const block = el("div", { class: "swapui-recipeBlock" }, [
-        el("div", { class: "swapui-recipeHeader" }, [
-          el("div", { class: "swapui-recipeMeal", text: label }),
-          el("div", { class: "swapui-recipeNote", text: text ? "Recipe available" : "No recipe yet" }),
-        ]),
-        // Clickable items (same component as meal plan)
-        el("div", { class: "swapui-items", style: "padding:10px 0 0 0;" }, (m.items || []).map((it, idx) =>
-          renderFoodItemButton(it, {
-            date: isoDate,
-            mealKey: (m.key || m.mealKey || label || "").toString(),
-            mealLabel: label,
-            itemIndex: idx,
-            from: "recipes",
-          })
-        )),
-        text ? el("div", { class: "swapui-recipeText", text: text }) : el("div", { class: "swapui-recipeText", text: "Recipes will appear here after generation." }),
-      ]);
-
-      out.push(block);
-    }
-
-    // If there are no meals in plan (unexpected), show whatever exists
-    if (!out.length) {
-      const txt = (recipeObj && (recipeObj.__all || JSON.stringify(recipeObj, null, 2))) || "Recipes will appear here after generation.";
-      out.push(
-        el("div", { class: "swapui-recipeBlock" }, [
-          el("div", { class: "swapui-recipeHeader" }, [
-            el("div", { class: "swapui-recipeMeal", text: "Recipes" }),
-            el("div", { class: "swapui-recipeNote", text: "" }),
-          ]),
-          el("div", { class: "swapui-recipeText", text: txt }),
-        ])
-      );
-    }
-
-    return out;
+  function getSwapsMount() {
+    return (
+      $("#swap-swaps") ||
+      $("[data-swap-swaps]") ||
+      $("#swapsPanel") ||
+      $("#swaps-panel") ||
+      $(".swaps-panel") ||
+      (function () {
+        const h = findHeading("Swaps");
+        return h ? h.closest("section,div") : null;
+      })()
+    );
   }
 
-  /* ---------------------------
-     Public API (SWAP_UI)
-  --------------------------- */
+  function getRecipesMount() {
+    return (
+      $("#swap-recipes") ||
+      $("[data-swap-recipes]") ||
+      $("#recipesList") ||
+      $("#recipes-list") ||
+      $(".recipes-list") ||
+      (function () {
+        const h = findHeading("Recipes");
+        return h ? h.closest("section,div") : null;
+      })()
+    );
+  }
 
-  const SWAP_UI = {
-    init(opts = {}) {
-      ensureStyles();
-      detectContainers();
-      state.config = { ...state.config, ...(opts.config || {}) };
-
-      // Hydrate from localStorage if needed
-      if (!state.plan) {
-        const p = loadPlan();
-        if (p) {
-          state.plan = p;
-          renderPlan(state.plan);
-        }
-      }
-      if (state.plan && !state.recipes) {
-        const wk = state.plan.weekStart || (state.plan.days && state.plan.days[0] && state.plan.days[0].date);
-        if (wk) {
-          const r = loadRecipesForWeek(wk);
-          if (r) state.recipes = r;
-        }
-      }
-
-      if (opts.plan) this.setPlan(opts.plan);
-      if (opts.recipes) this.setRecipes(opts.recipes);
-
-      // If swaps panel exists and empty, show hint
-      if (state.els.swapsBox && (!state.els.swapsList || (state.els.swapsList && !state.els.swapsList.innerHTML.trim()))) {
-        renderSwapsEmpty();
-      }
-    },
-
-    setPlan(planOrResponse) {
-      ensureStyles();
-      detectContainers();
-
-      const plan = normalizePlan(planOrResponse);
-      if (!plan) return;
-
-      state.plan = plan;
-      savePlan(plan);
-
-      // When a new plan arrives, recipes are not necessarily dirty; keep current recipes but mark dirty if week differs
-      const wk = plan.weekStart || (plan.days && plan.days[0] && plan.days[0].date) || null;
-      if (wk && state.recipes && state.recipes.weekStart && state.recipes.weekStart !== wk) {
-        state.recipes = null;
-        state.recipesDirty = false;
-      }
-
-      renderPlan(plan);
-
-      // If recipes view is visible/exists, re-render recipes too (from LS if present)
-      if (state.els.recipesBox || state.els.recipesList) {
-        const cached = wk ? loadRecipesForWeek(wk) : null;
-        if (cached) {
-          state.recipes = cached;
-          renderRecipes(state.plan, normalizeRecipes(cached, state.plan));
-        }
-      }
-    },
-
-    setRecipes(recipesOrResponse) {
-      ensureStyles();
-      detectContainers();
-
-      if (!state.plan) {
-        state.plan = loadPlan();
-      }
-      const norm = normalizeRecipes(recipesOrResponse, state.plan);
-
-      if (!norm) return;
-
-      if (!norm.weekStart && state.plan && state.plan.weekStart) norm.weekStart = state.plan.weekStart;
-
-      state.recipes = norm;
-      state.recipesDirty = false;
-
-      saveRecipes(norm);
-      if (state.plan) renderRecipes(state.plan, norm);
-    },
-
-    renderSwaps(swapsOrResponse) {
-      // Manual render if app.js uses it
-      if (!state.selected) {
-        renderSwapsEmpty();
-        return;
-      }
-      const norm = normalizeSwaps(swapsOrResponse);
-      if (!norm.ok) {
-        renderSwapsError(norm.error || "Unknown swaps error.");
-        return;
-      }
-      renderSwapsList(norm, state.selected.item, state.selected.ctx);
-    },
-
-    replaceSelectedWith(candidate) {
-      const res = replaceItemInPlan(candidate);
-      if (!res.ok) {
-        renderSwapsError(res.error || "Could not replace item.");
-        return;
-      }
-
-      // Re-render plan calendar
-      renderPlan(res.plan);
-
-      // Keep selection (reselect the same position but now new item)
-      try {
-        const sel = state.selected;
-        const found = findSelectedInPlan(res.plan, sel);
-        if (found) {
-          const newItem = found.meal.items[found.idx];
-          state.selected.item = newItem;
-          // Trigger swaps refresh for newly replaced item
-          loadAndRenderSwaps(newItem, sel.ctx);
-        }
-      } catch {}
-
-      // Re-render recipes if visible (shows warning until regenerate)
-      if (state.plan && (state.els.recipesBox || state.els.recipesList)) {
-        const wk = state.plan.weekStart || (state.plan.days && state.plan.days[0] && state.plan.days[0].date);
-        const cached = wk ? loadRecipesForWeek(wk) : null;
-        const norm = cached ? normalizeRecipes(cached, state.plan) : normalizeRecipes(state.recipes, state.plan);
-        renderRecipes(state.plan, norm || { weekStart: wk, byDate: {}, raw: null });
-      }
-    },
-
-    getState() {
-      return { ...state };
-    },
+  // -----------------------------
+  // Local storage (keeps UI consistent after generation)
+  // -----------------------------
+  const LS = {
+    planKeys: ["swap.plan", "SWAP_PLAN", "swap_plan", "swap:plan"],
+    recipesPrefixKeys: ["swap.recipes.", "SWAP_RECIPES_", "swap_recipes_"],
   };
 
-  // Backward-compatible aliases (so you don’t have to hunt app.js calls)
-  window.SWAP_UI = SWAP_UI;
-  window.ui = window.ui || SWAP_UI;
-  window.UI = window.UI || SWAP_UI;
+  function savePlanToStorage(plan) {
+    try {
+      localStorage.setItem("swap.plan", JSON.stringify(plan));
+    } catch (_) {}
+  }
 
-  document.addEventListener("DOMContentLoaded", () => {
-    SWAP_UI.init();
+  function loadPlanFromStorage() {
+    for (const k of LS.planKeys) {
+      const v = localStorage.getItem(k);
+      if (v) {
+        const parsed = safeJSONParse(v, null);
+        if (parsed && (parsed.days || parsed.weekStart)) return parsed;
+      }
+    }
+    return null;
+  }
+
+  function saveRecipesToStorage(weekStart, recipesObj) {
+    if (!weekStart) return;
+    try {
+      localStorage.setItem("swap.recipes." + weekStart, JSON.stringify(recipesObj));
+    } catch (_) {}
+  }
+
+  function loadRecipesFromStorage(weekStart) {
+    if (!weekStart) return null;
+    const candidates = [
+      "swap.recipes." + weekStart,
+      "SWAP_RECIPES_" + weekStart,
+      "swap_recipes_" + weekStart,
+    ];
+    for (const k of candidates) {
+      const v = localStorage.getItem(k);
+      if (v) {
+        const parsed = safeJSONParse(v, null);
+        if (parsed) return parsed;
+      }
+    }
+    return null;
+  }
+
+  // -----------------------------
+  // API calling (uses your existing api.js if present)
+  // -----------------------------
+  async function apiCall(route, params) {
+    // Best-case: api.js exposes SWAP_API.call(route, params)
+    if (window.SWAP_API && typeof window.SWAP_API.call === "function") {
+      return await window.SWAP_API.call(route, params);
+    }
+    // Next: SWAP_API[route](params)
+    if (window.SWAP_API && typeof window.SWAP_API[route] === "function") {
+      return await window.SWAP_API[route](params);
+    }
+    // Fallback: app layer might expose SWAP.callApi
+    if (window.SWAP && typeof window.SWAP.callApi === "function") {
+      return await window.SWAP.callApi(route, params);
+    }
+    throw new Error("API layer not found (SWAP_API missing).");
+  }
+
+  // -----------------------------
+  // Rendering: Meal plan calendar
+  // -----------------------------
+  const MEAL_ORDER = [
+    { key: "breakfast", label: "Breakfast" },
+    { key: "snack_am", label: "Snack (AM)" },
+    { key: "lunch", label: "Lunch" },
+    { key: "snack_pm", label: "Snack (PM)" },
+    { key: "dinner", label: "Dinner" },
+  ];
+
+  function normalizeMealKey(k) {
+    k = String(k || "").toLowerCase().trim();
+    if (k === "snack (am)" || k === "snack_am" || k === "snackam") return "snack_am";
+    if (k === "snack (pm)" || k === "snack_pm" || k === "snackpm") return "snack_pm";
+    if (k === "breakfast") return "breakfast";
+    if (k === "lunch") return "lunch";
+    if (k === "dinner") return "dinner";
+    return k || "other";
+  }
+
+  function groupDotClass(group) {
+    group = String(group || "").toLowerCase();
+    if (group.includes("protein")) return "protein";
+    if (group.includes("carb") || group.includes("grain") || group.includes("starch")) return "carb";
+    if (group.includes("fat") || group.includes("oil")) return "fat";
+    if (group.includes("fruit")) return "fruit";
+    if (group.includes("veg")) return "veg";
+    return "other";
+  }
+
+  function mealTotals(meal) {
+    const items = (meal && meal.items) ? meal.items : [];
+    let cals = 0;
+    for (const it of items) cals += Number(it.calories || 0) || 0;
+    return Math.round(cals);
+  }
+
+  function renderPlan(plan) {
+    const mount = getPlanMount();
+    if (!mount) return;
+
+    injectStyles();
+
+    // Use plan.days structure from your Apps Script output
+    const days = Array.isArray(plan && plan.days) ? plan.days : [];
+    if (!days.length) {
+      mount.innerHTML = `<div class="swap-ui-muted">No plan found for this week yet.</div>`;
+      return;
+    }
+
+    const html = `
+      <div class="swap-ui-calendar">
+        <div class="swap-ui-weekwrap">
+          <div class="swap-ui-weekgrid" id="swap-ui-weekgrid">
+            ${days
+              .map((day, dayIndex) => {
+                const d = isoToDate(day.date) || new Date();
+                const meals = Array.isArray(day.meals) ? day.meals : [];
+                const mealMap = {};
+                for (const m of meals) mealMap[normalizeMealKey(m.key || m.label)] = m;
+
+                return `
+                  <div class="swap-ui-day" data-day-index="${dayIndex}">
+                    <div class="swap-ui-dayhead">
+                      <div class="swap-ui-dayname">${fmtDow(d)}</div>
+                      <div class="swap-ui-daydate">${fmtMD(d)}</div>
+                    </div>
+
+                    ${MEAL_ORDER.map(({ key, label }) => {
+                      const m = mealMap[key] || { key, label, items: [] };
+                      const items = Array.isArray(m.items) ? m.items : [];
+                      return `
+                        <div class="swap-ui-meal" data-meal-key="${key}">
+                          <div class="swap-ui-mealhead">
+                            <div class="swap-ui-meallabel">${label}</div>
+                            <div class="swap-ui-mealmeta">${items.length ? `${mealTotals(m)} kcal` : ""}</div>
+                          </div>
+                          <div class="swap-ui-items">
+                            ${
+                              items.length
+                                ? items
+                                    .map((it, itemIndex) => {
+                                      const g = groupDotClass(it.group);
+                                      const grams = Math.round(Number(it.grams || it.portion_g || 0) || 0);
+                                      const cals = Math.round(Number(it.calories || 0) || 0);
+                                      const name = String(it.name || "Food item");
+                                      return `
+                                        <button
+                                          type="button"
+                                          class="swap-ui-food"
+                                          data-day-index="${dayIndex}"
+                                          data-meal-key="${key}"
+                                          data-item-index="${itemIndex}"
+                                          data-food-id="${String(it.id || "")}"
+                                          data-food-group="${String(it.group || "")}"
+                                          title="${name.replace(/"/g, "&quot;")}"
+                                        >
+                                          <div class="swap-ui-foodname">${ellipsize(name, 44)}</div>
+                                          <div class="swap-ui-foodsub">
+                                            <span class="swap-ui-tag"><span class="swap-ui-dot ${g}"></span>${String(it.group || "other")}</span>
+                                            <span class="swap-ui-tag">${grams ? `${grams} g` : "portion"}</span>
+                                            <span class="swap-ui-tag">${cals ? `${cals} kcal` : "kcal"}</span>
+                                          </div>
+                                        </button>
+                                      `;
+                                    })
+                                    .join("")
+                                : `<div class="swap-ui-muted">—</div>`
+                            }
+                          </div>
+                        </div>
+                      `;
+                    }).join("")}
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+        </div>
+      </div>
+    `.trim();
+
+    mount.innerHTML = html;
+
+    // restore selected highlight if possible
+    if (state.selected) {
+      highlightSelected(state.selected);
+    }
+  }
+
+  function highlightSelected(sel) {
+    $$(`.swap-ui-food`).forEach((b) => b.classList.remove("is-selected"));
+    const btn = $(
+      `.swap-ui-food[data-day-index="${sel.dayIndex}"][data-meal-key="${sel.mealKey}"][data-item-index="${sel.itemIndex}"]`
+    );
+    if (btn) btn.classList.add("is-selected");
+  }
+
+  // -----------------------------
+  // Swaps panel rendering + replace
+  // -----------------------------
+  function renderSwaps(selected, swaps) {
+    const mount = getSwapsMount();
+    if (!mount) return;
+
+    injectStyles();
+
+    if (!selected) {
+      mount.innerHTML = `<div class="swap-ui-muted">Select a food item to see swaps.</div>`;
+      return;
+    }
+
+    const it = selected.item || {};
+    const grams = Math.round(Number(it.grams || it.portion_g || 0) || 0);
+    const cals = Math.round(Number(it.calories || 0) || 0);
+
+    const rows = Array.isArray(swaps) ? swaps : [];
+    const listHTML = rows.length
+      ? rows
+          .map((s, idx) => {
+            const sGrams = Math.round(Number(s.grams || s.portion_g || 0) || 0);
+            const sCals = Math.round(Number(s.calories || 0) || 0);
+            const sName = String(s.name || "Swap");
+            return `
+              <div class="swap-ui-swaprow">
+                <div>
+                  <div class="swap-ui-swapname">${ellipsize(sName, 54)}</div>
+                  <div class="swap-ui-swapmeta">${sGrams ? `${sGrams} g` : "portion"} • ${sCals ? `${sCals} kcal` : "kcal"}</div>
+                </div>
+                <button class="swap-ui-btn" type="button"
+                  data-action="replace"
+                  data-swap-index="${idx}"
+                >Replace</button>
+              </div>
+            `;
+          })
+          .join("")
+      : `<div class="swap-ui-muted">No swaps found for this item.</div>`;
+
+    mount.innerHTML = `
+      <div class="swap-ui-swaps">
+        <div class="swap-ui-selhead">
+          <div class="swap-ui-seltitle">${ellipsize(String(it.name || "Selected item"), 64)}</div>
+          <div class="swap-ui-selmeta">${String(it.group || "other")} • ${grams ? `${grams} g` : "portion"} • ${cals ? `${cals} kcal` : "kcal"}</div>
+        </div>
+        ${listHTML}
+      </div>
+    `.trim();
+  }
+
+  function replaceSelectedWithSwap(swapItem) {
+    if (!state.plan || !state.selected) return;
+
+    const { dayIndex, mealKey, itemIndex } = state.selected;
+    const day = state.plan.days?.[dayIndex];
+    if (!day || !Array.isArray(day.meals)) return;
+
+    const m = day.meals.find((mm) => normalizeMealKey(mm.key || mm.label) === mealKey);
+    if (!m || !Array.isArray(m.items) || !m.items[itemIndex]) return;
+
+    m.items[itemIndex] = swapItem;
+
+    // Persist + rerender plan
+    savePlanToStorage(state.plan);
+    renderPlan(state.plan);
+
+    // Keep selection on the replaced item
+    state.selected.item = swapItem;
+    highlightSelected(state.selected);
+
+    // Refresh swaps list for new item automatically
+    loadSwapsForSelected().catch(() => {});
+  }
+
+  async function loadSwapsForSelected() {
+    if (!state.selected || !state.selected.item) return;
+
+    const it = state.selected.item;
+    const portionG = clamp(Number(it.grams || it.portion_g || 0) || 0, 1, 5000);
+
+    // Render loading state
+    renderSwaps(state.selected, []);
+    const mount = getSwapsMount();
+    if (mount) {
+      const muted = $(".swap-ui-muted", mount);
+      if (!muted) {
+        // no-op
+      }
+    }
+
+    // Call API: route=swap
+    const data = await apiCall("swap", {
+      id: String(it.id || ""),
+      portion_g: portionG,
+      tol: 0.05,
+      flex: 0,
+      limit: 12,
+      same_group: 1,
+    });
+
+    const swaps = (data && (data.swaps || data.items || data.results)) || data || [];
+    state.swaps = Array.isArray(swaps) ? swaps : [];
+    renderSwaps(state.selected, state.swaps);
+  }
+
+  // -----------------------------
+  // Rendering: Recipes view (accordion + excerpt)
+  // -----------------------------
+  function renderRecipes(recipesObj, weekStart) {
+    const mount = getRecipesMount();
+    if (!mount) return;
+
+    injectStyles();
+
+    // Accept flexible shapes:
+    // 1) { days: [{date, meals:[{key,label, recipeText}]}] }
+    // 2) { [date]: { breakfast: "text", lunch:"text"... } }
+    const days = [];
+
+    if (recipesObj && Array.isArray(recipesObj.days)) {
+      for (const d of recipesObj.days) days.push(d);
+    } else if (recipesObj && typeof recipesObj === "object") {
+      // map keyed by date
+      const keys = Object.keys(recipesObj).sort();
+      for (const date of keys) {
+        const v = recipesObj[date];
+        const meals = [];
+        if (v && typeof v === "object") {
+          for (const mk of Object.keys(v)) {
+            meals.push({ key: mk, label: mk, text: v[mk] });
+          }
+        }
+        days.push({ date, meals });
+      }
+    }
+
+    if (!days.length) {
+      mount.innerHTML = `<div class="swap-ui-muted">Recipes will appear here after generation.</div>`;
+      return;
+    }
+
+    const html = `
+      <div class="swap-ui-recipes">
+        ${days
+          .map((day, idx) => {
+            const d = isoToDate(day.date) || new Date();
+            const title = `${fmtDow(d)} • ${day.date || fmtMD(d)}`;
+
+            const meals = Array.isArray(day.meals) ? day.meals : [];
+            const body = meals.length
+              ? meals
+                  .map((m) => {
+                    const label = String(m.label || m.key || "Meal");
+                    const textRaw = String(m.text || m.recipe || m.recipeText || "");
+                    const text = textRaw.trim();
+                    if (!text) {
+                      return `
+                        <div class="swap-ui-recipeblock">
+                          <div class="swap-ui-recipename">${label}</div>
+                          <div class="swap-ui-muted">No recipe text yet.</div>
+                        </div>
+                      `;
+                    }
+                    const excerpt = ellipsize(text, 220);
+                    const needsMore = text.length > excerpt.length;
+
+                    return `
+                      <div class="swap-ui-recipeblock">
+                        <div class="swap-ui-recipename">${label}</div>
+                        <div class="swap-ui-recipetext ${needsMore ? "is-collapsed" : ""}" data-recipe-text>
+                          <span class="swap-ui-excerpt">${excerpt}</span>
+                          ${needsMore ? `<span class="swap-ui-more">${text}</span>` : ""}
+                        </div>
+                        ${
+                          needsMore
+                            ? `<div class="swap-ui-link" data-action="toggleRecipe">Show more</div>`
+                            : ""
+                        }
+                      </div>
+                    `;
+                  })
+                  .join("")
+              : `<div class="swap-ui-muted">No recipes stored for this day yet.</div>`;
+
+            return `
+              <div class="swap-ui-acc" data-acc="${idx}">
+                <button type="button" class="swap-ui-accbtn" data-action="toggleAcc" data-acc="${idx}">
+                  <div class="swap-ui-acctitle">${title}</div>
+                  <div class="swap-ui-accsub">${meals.length ? `${meals.length} meals` : "No meals"}</div>
+                </button>
+                <div class="swap-ui-accbody">
+                  ${body}
+                </div>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `.trim();
+
+    mount.innerHTML = html;
+
+    // open first day by default
+    const first = $(`.swap-ui-acc[data-acc="0"]`, mount);
+    if (first) first.classList.add("is-open");
+  }
+
+  // -----------------------------
+  // Events + Delegated clicks
+  // -----------------------------
+  function attachDelegates() {
+    if (attachDelegates._done) return;
+    attachDelegates._done = true;
+
+    document.addEventListener("click", async (e) => {
+      const foodBtn = e.target.closest && e.target.closest(".swap-ui-food");
+      if (foodBtn) {
+        try {
+          const dayIndex = Number(foodBtn.getAttribute("data-day-index"));
+          const mealKey = String(foodBtn.getAttribute("data-meal-key") || "");
+          const itemIndex = Number(foodBtn.getAttribute("data-item-index"));
+
+          const plan = state.plan || loadPlanFromStorage();
+          if (!plan || !plan.days?.[dayIndex]) return;
+
+          const day = plan.days[dayIndex];
+          const meal = (day.meals || []).find((m) => normalizeMealKey(m.key || m.label) === mealKey);
+          if (!meal || !meal.items?.[itemIndex]) return;
+
+          state.plan = plan;
+          state.selected = { dayIndex, mealKey, itemIndex, item: meal.items[itemIndex] };
+
+          highlightSelected(state.selected);
+          renderSwaps(state.selected, []);
+          await loadSwapsForSelected();
+        } catch (err) {
+          // don’t crash the app
+          console.error("SWAP UI click error:", err);
+          failOpen();
+        }
+        return;
+      }
+
+      const swapsMount = getSwapsMount();
+      const replaceBtn = e.target.closest && e.target.closest('[data-action="replace"]');
+      if (replaceBtn && swapsMount && swapsMount.contains(replaceBtn)) {
+        const idx = Number(replaceBtn.getAttribute("data-swap-index"));
+        const swapItem = state.swaps?.[idx];
+        if (swapItem) replaceSelectedWithSwap(swapItem);
+        return;
+      }
+
+      const toggleAcc = e.target.closest && e.target.closest('[data-action="toggleAcc"]');
+      if (toggleAcc) {
+        const acc = toggleAcc.getAttribute("data-acc");
+        const box = document.querySelector(`.swap-ui-acc[data-acc="${acc}"]`);
+        if (box) box.classList.toggle("is-open");
+        return;
+      }
+
+      const toggleRecipe = e.target.closest && e.target.closest('[data-action="toggleRecipe"]');
+      if (toggleRecipe) {
+        const block = toggleRecipe.previousElementSibling;
+        if (!block) return;
+
+        const isCollapsed = block.classList.contains("is-collapsed");
+        if (isCollapsed) {
+          // expand: show full
+          const full = $(".swap-ui-more", block);
+          const excerpt = $(".swap-ui-excerpt", block);
+          if (full && excerpt) {
+            excerpt.style.display = "none";
+            full.style.display = "inline";
+          }
+          block.classList.remove("is-collapsed");
+          toggleRecipe.textContent = "Show less";
+        } else {
+          // collapse back to excerpt
+          const full = $(".swap-ui-more", block);
+          const excerpt = $(".swap-ui-excerpt", block);
+          if (full && excerpt) {
+            excerpt.style.display = "inline";
+            full.style.display = "none";
+          }
+          block.classList.add("is-collapsed");
+          toggleRecipe.textContent = "Show more";
+        }
+        return;
+      }
+    });
+  }
+
+  // -----------------------------
+  // Public API (used by app.js if it wants)
+  // -----------------------------
+  function setPlan(plan) {
+    state.plan = plan;
+    savePlanToStorage(plan);
+    renderPlan(plan);
+  }
+
+  function setRecipes(recipesObj) {
+    state.recipes = recipesObj;
+    const weekStart = state.plan?.weekStart || state.plan?.week_start || state.plan?.week || null;
+    saveRecipesToStorage(weekStart, recipesObj);
+    renderRecipes(recipesObj, weekStart);
+  }
+
+  function syncFromStorage() {
+    const plan = loadPlanFromStorage();
+    if (plan) {
+      state.plan = plan;
+      renderPlan(plan);
+
+      const ws = plan.weekStart || plan.week_start || plan.week || null;
+      const rec = loadRecipesFromStorage(ws);
+      if (rec) {
+        state.recipes = rec;
+        renderRecipes(rec, ws);
+      }
+    }
+  }
+
+  // Listen for app layer events if present
+  window.addEventListener("swap:plan", (e) => {
+    const plan = e && e.detail ? (e.detail.plan || e.detail) : null;
+    if (plan) setPlan(plan);
   });
+
+  window.addEventListener("swap:recipes", (e) => {
+    const recipesObj = e && e.detail ? (e.detail.recipes || e.detail) : null;
+    if (recipesObj) setRecipes(recipesObj);
+  });
+
+  // -----------------------------
+  // Boot
+  // -----------------------------
+  function boot() {
+    failOpen();
+    injectStyles();
+    attachDelegates();
+
+    // Render whatever we already have stored so the UI never sits blank
+    syncFromStorage();
+
+    // expose
+    window.SWAP_UI = {
+      version: UI_VERSION,
+      setPlan,
+      setRecipes,
+      renderPlan,
+      renderSwaps,
+      renderRecipes,
+      syncFromStorage,
+      failOpen,
+    };
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
 })();

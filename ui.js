@@ -10,7 +10,7 @@ import { Storage } from "./storage.js";
 
 const UI_STATE = {
   plan: null,
-  onPick: null,            // function(day, meal, item)
+  onPick: null,            // function- (day, meal, item)
   selected: null,          // { dayIndex, date, mealKey, itemIndex }
   lastSwapResponse: null,  // raw response from API.suggestSwaps()
   boundCalendarEl: null,
